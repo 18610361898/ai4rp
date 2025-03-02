@@ -496,6 +496,176 @@ graph LR
 
 
 ## 二、深入ncnn
+ncnn是基于C++的轻量级神经网络框架，主要用于嵌入式设备上的高性能推理。它支持多种模型格式，包括ONNX、TensorFlow Lite等，并提供了丰富的算子支持和优化技术，以实现高效的计算和低延迟的推断。接下来的学习思路是从几个典型算子切入，研究算子的具体实现、性能优化和跨平台实现，然后逐步上升到图等，直到完成ncnn软件架构的梳理。
+
+
+### 2.1 算子基类
+ncnn实现了近百个算子，详细清单参见官方文档[《operators》](https://github.com/Tencent/ncnn/blob/master/docs/developer-guide/operators.md)。ncnn中，几乎所有的算子都是基类Layer的派生类，为此在研究某个算子的实现之前，需要先了解基类Layer的定义。
+
+实现源码：[layer.h](https://github.com/Tencent/ncnn/blob/master/src/layer.h)、[layer.cpp](https://github.com/Tencent/ncnn/blob/master/src/layer.h)
+```mermaid
+classDiagram
+class Layer {
+  <<abstract>>
+  + bool one_blob_only;
+  + bool support_inplace;
+  + bool support_vulkan;
+  + bool support_packing;
+  + bool support_bf16_storage;
+  + bool support_fp16_storage;
+  + bool support_int8_storage;
+  + bool support_image_storage;
+  + bool support_tensor_storage;
+  + void* userdata;
+  + int typeindex;
+  + std::vector<int> bottoms;
+  + std::vector<int> tops;
+  + std::vector<Mat> bottom_shapes;
+  + std::vector<Mat> top_shapes;
+  
+  + virtual int load_param(const ParamDict& pd)
+  + virtual int load_model(const ModelBin& mb)
+  + virtual int create_pipeline(const Option& opt)
+  + virtual int destroy_pipeline(const Option& opt)
+  + virtual int forward(const std::vector<Mat>& bottom_blobs, std::vector<Mat>& top_blobs, const Option& opt) const
+  + virtual int forward(const Mat& bottom_blob, Mat& top_blob, const Option& opt) const
+  + virtual int forward_inplace(std::vector<Mat>& bottom_top_blobs, const Option& opt) const
+  + virtual int forward_inplace(Mat& bottom_top_blob, const Option& opt) const
+}
+```
+|成员|说明|备注|
+|----|---|----|
+|one_blob_only    | 输入和输出是否都是单个Mat对象。
+|support_inplace  | 是否支持原地计算，即输入输出共用一个Mat。
+|support_vulkan   | 是否支持Vulkan，即是否支持Vulkan加速。
+|support_packing  | 
+|load_param       | 加载算子参数 | 非必须实现
+|load_model       | 加载算子权重 | 非必须实现
+|create_pipeline  | 创建计算管道 | 非必须实现，多用于复杂的算子
+|destroy_pipeline | 销毁计算管道 | 非必须实现，多用于复杂的算子
+|forward          | 执行前向计算 | 对于one_blob_only=false && support_inplace=false的算子，必须重载实现
+|forward          | 执行前向计算 | 对于one_blob_only=true  && support_inplace=false的算子，必须重载实现
+|forward_inplace  | 执行原地计算 | 对于one_blob_only=false && support_inplace=true 的算子，必须重载实现
+|forward_inplace  | 执行原地计算 | 对于one_blob_only=true  && support_inplace=true 的算子，必须重载实现
+
+#### 2.1.1 注册算子
+对于已经实现的每一个算子，都需要借助宏DEFINE_LAYER_CREATOR来为其定义一个创建函数，并将其注册到全局的注册表中。
+```c++
+#define DEFINE_LAYER_CREATOR(name)                          \
+    ::ncnn::Layer* name##_layer_creator(void* /*userdata*/) \
+    {                                                       \
+        return new name;                                    \
+    }
+```
+宏DEFINE_LAYER_CREATOR的参数name为算子的类名，例如ReLU算子的类名为ReLU。创建函数集中在文件ncnn/build/src/layer_declaration.h中定义，该文件是在编译时自动生成的。每一个算子都有一个对应的宏调用，譬如ReLU算子：
+```c++
+...
+#include "layer/relu.h"
+namespace ncnn { DEFINE_LAYER_CREATOR(ReLU) }
+...
+```
+算子在文件ncnn/build/src/layer_registry.h中注册，该文件是在编译时自动生成的。每一个算子都有一个对应的注册项，譬如ReLU算子：
+```c++
+static const layer_registry_entry layer_registry[] = {
+...
+#if NCNN_STRING
+{"PReLU", PReLU_layer_creator},
+#else
+{PReLU_layer_creator},
+#endif
+...
+```
+ncnn还为每一个算子分配了一个唯一的索引，索引集中在文件ncnn/build/src/layer_type_enum.h中定义，该文件是在编译时自动生成的。譬如ReLU算子的索引为26：
+```c++
+...
+ReLU = 26,
+...
+```
+
+
+#### 2.1.2 创建算子
+算子的创建由下面的一组函数负责，既可以通过算子的名字（下面名为type的参数）来创建指定的算子，也可以通过算子的索引来创建指定的算子：
+```c++
+#if NCNN_STRING
+NCNN_EXPORT Layer* create_layer(const char* type);
+NCNN_EXPORT Layer* create_layer_naive(const char* type);
+NCNN_EXPORT Layer* create_layer_cpu(const char* type);
+#if NCNN_VULKAN
+NCNN_EXPORT Layer* create_layer_vulkan(const char* type);
+#endif // NCNN_VULKAN
+#endif // NCNN_STRING
+NCNN_EXPORT Layer* create_layer(int index);
+NCNN_EXPORT Layer* create_layer_naive(int index);
+NCNN_EXPORT Layer* create_layer_cpu(int index);
+#if NCNN_VULKAN
+NCNN_EXPORT Layer* create_layer_vulkan(int index);
+#endif // NCNN_VULKAN
+```
+譬如创建ReLU算子：
+```c++
+Layer* relu = create_layer("ReLU");
+或
+Layer* relu = create_layer(ReLU);
+```
+
+
+### 2.2 典型算子
+
+#### 2.2.1 ReLU
+ReLU（Rectified Linear Unit，修正线性单元）是深度学习中最常用的激活函数之一，其数学表达式为：<br>
+f(x) = max(0, x)<br>
+即当输入值大于0时输出原值，否则输出0。函数图像为：
+![alt text](relu.png)
+
+实现源码：[relu.h](https://github.com/Tencent/ncnn/blob/master/src/layer/relu.h)、[relu.cpp](https://github.com/Tencent/ncnn/blob/master/src/layer/relu.cpp)
+
+- ReLU算子支持原地计算，即输入输出共用一个Mat对象，因此它只重载了forward_inplace；
+- ReLU算子仅支持一个参数：斜率slope，默认为0，但构造函数并未初始化为0；
+- 如果参数slope的值为0，则Mat中所有小于0的元素将被设置为0，其它的保持不变；
+- 如果参数slope的值不为0，则Mat中所有小于0的元素都被乘以slope，其它的保持不变。猜测是为了解决神经元死完问题；
+- ReLU算子没有权重，因此它没有重载load_model；
+- 从ReLU算子的实现可以看出，Mat中各通道中的数据是连续的，CHWD格式?有待确认。
+
+
+#### 2.2.2 ReLU_x86
+ReLU_x86，顾名思义，该类是ReLU算子针对x86平台的优化实现，从其实现可以看出它使用了x86平台的SSE。而前面的ReLU
+
+实现源码：[relu_x86.h](https://github.com/Tencent/ncnn/blob/master/src/layer/x86/relu_x86.h)、[relu_x86.cpp](https://github.com/Tencent/ncnn/blob/master/src/layer/x86/relu_x86.cpp)
+
+
+参考资料：
+[《神经网络中的激活函数——ReLU函数》](https://blog.csdn.net/Seu_Jason/article/details/138906388)
+
+
+### 2.3 优化技术
+
+#### 2.3.1 OpenMP
+OpenMP(Open Multi-Processing)
+
+#### 2.3.2 SIMD
+x86平台上，SIMD(Single Instruction Multiple Data，单指令多数据)技术通过扩展指令集来实现并行计算能力的提升：
+1. SSE2（Streaming SIMD Extensions 2）
+    - 向量宽度：128位，支持双精度浮点和整数运算。
+    - 指令规模：144条指令，首次实现64位双精度浮点并行计算。
+    - 应用优化：通过缓存控制指令提升多媒体编解码效率（如H.264视频处理）。
+    - 兼容性：兼容MMX和早期SSE指令，确保软件平滑过渡。
+2. AVX（Advanced Vector Extensions）
+    - 向量宽度：256位，单指令处理8个单精度或4个双精度浮点数。
+    - 寄存器复用：16个YMM寄存器向下兼容XMM，减少数据搬运开销。
+    - 指令改进：引入三操作数指令（如vaddps ymm0, ymm1, ymm2），提升代码密度。
+    - FMA（融合乘加）：在AVX2中支持单指令完成乘法和加法，提升计算密度。
+1. AVX-512F（AVX-512基础指令集）
+    - 向量宽度：512位，单指令处理16个单精度或8个双精度浮点数。
+    - 寄存器扩展：32个ZMM寄存器，支持掩码操作和冲突检测（AVX-512CD）。
+    - 性能优势：相比AVX2，理论峰值性能翻倍，适用于AI训练（如TensorFlow优化）。
+    - 挑战：高功耗和混合架构（如Alder Lake的P核/E核）导致消费级CPU限制其使用。
+
+|特性|SSE2|AVX|AVX-512F|
+|---|---|---|---|
+|向量宽度|128位|256位|512位|
+|寄存器数|8（XMM）|16（YMM）|32（ZMM）|
+|峰值加速比|2-4倍（标量对比）|4-8倍（SSE2对比）|8-16倍（AVX对比）
+|典型功耗|低|中|高|
 
 ## 三、硬件平台
 
