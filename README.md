@@ -1,7 +1,7 @@
 # AI for Raspberry Pi
 
 
-## 一、ncnn
+## 一、初探ncnn
 ncnn是一个为手机端极致优化的高性能神经网络前向计算框架。ncnn从设计之初深刻考虑手机端的部署和使用。无第三方依赖，跨平台，手机端cpu的速度快于目前所有已知的开源框架。基于ncnn，开发者能够将深度学习算法轻松移植到手机端高效执行，开发出人工智能APP，将AI带到你的指尖。
 
 [官方GitHub链接](https://github.com/Tencent/ncnn)
@@ -493,3 +493,38 @@ graph LR
     |<img src="hummingbird.png" width="128" height="128"/>|94<br>92<br>16|94<br>92<br>95<br>12<br>14|
     |<img src="sailboat.png" width="128" height="128"/>|780<br>914<br>484|914<br>780<br>484<br>871<br>724|
     |<img src="mushroom.png" width="128" height="128"/>|947<br>985<br>340|947<br>992<br>985<br>996<br>840|
+
+
+## 二、深入ncnn
+
+## 三、硬件平台
+
+### 3.1 树莓派
+1.[树莓派官网](https://www.raspberrypi.com/) 2.[树莓派文档](https://github.com/raspberrypi/documentation/tree/develop/documentation)
+
+树莓派4：
+
+树莓派5：
+  - 处理器：BCM2712，四核Cortex-A76核心，频率2.4GHz
+  - 内存：2GB、4GB、8GB、16GB LPDDR4-4267 SDRAM 
+  - 存储：0GB、16GB、32GB、64GB eMMC FLASH
+  - GPU：VideoCore7 GPU，支持OpenGL ES 3.1和Vulkan 1.2
+  - NPU：无
+
+#### 3.1.1 树莓派5相关资料
+  - [Getting started documentation](https://www.raspberrypi.com/documentation/computers/raspberry-pi.html)
+  - [Raspberry Pi 5 product brief](https://datasheets.raspberrypi.com/rpi5/raspberry-pi-5-product-brief.pdf)
+  - [Raspberry Pi Compute Module 5 product brief](https://datasheets.raspberrypi.com/cm5/cm5-product-brief.pdf)
+  - [Raspberry Pi Compute Module 5 datasheet](https://datasheets.raspberrypi.com/cm5/cm5-datasheet.pdf)
+  - [RP1 peripherals documentation](https://datasheets.raspberrypi.com/rp1/rp1-peripherals.pdf)
+
+
+### 3.2 Rockchip
+
+
+
+### 参考文档
+1.[RK3568 vs 树莓派4: 嵌入式计算的巅峰之争](https://zhuanlan.zhihu.com/p/637505045)
+- RK3568：ARM Cortex-A55架构的四核心CPU(主频最高2.0GHz)+Mali-G52 GPU(800MHz);
+- 树莓派4：BCM2711芯片，四核Cortex-A72 CPU(主频1.5GHz)+VideoCore6 GPU(500MHz);
+
