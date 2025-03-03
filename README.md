@@ -619,22 +619,47 @@ f(x) = max(0, x)<br>
 
 实现源码：[relu.h](https://github.com/Tencent/ncnn/blob/master/src/layer/relu.h)、[relu.cpp](https://github.com/Tencent/ncnn/blob/master/src/layer/relu.cpp)
 
-- ReLU算子支持原地计算，即输入输出共用一个Mat对象，因此它只重载了forward_inplace；
-- ReLU算子仅支持一个参数：斜率slope，默认为0，但构造函数并未初始化为0；
+- ReLU算子支持原地计算，即输入、输出共用一个Mat对象，因为support_inplace被设置为true了；
+- ReLU算子仅支持一个参数：斜率slope，默认值为0，但并未在构造函数中显示地将其初始化为0；
 - 如果参数slope的值为0，则Mat中所有小于0的元素将被设置为0，其它的保持不变；
-- 如果参数slope的值不为0，则Mat中所有小于0的元素都被乘以slope，其它的保持不变。猜测是为了解决神经元死完问题；
-- ReLU算子没有权重，因此它没有重载load_model；
-- 从ReLU算子的实现可以看出，Mat中各通道中的数据是连续的，CHWD格式?有待确认。
+- 如果参数slope的值不为0，则Mat中所有小于0的元素都被乘以slope，其它的保持不变。猜测这是为了解决神经元死亡（Dead ReLU，神经元失去活力）问题；
+- ReLU算子没有权重，因此它没有重载load_model；它有一个参数，所以它重载了load_param；
+- 从ReLU算子的实现可以看出，Mat中各通道中的数据是连续的。<font color="red">CHWD/CDHW格式?有待确认。</font>
+- 使用了OpenMP技术，对计算内核进行多线程并行化优化，适用于循环次数多、总耗时长的计算任务；
+
+参考资料：<br>
+ - [《神经网络中的激活函数——ReLU函数》](https://blog.csdn.net/Seu_Jason/article/details/138906388)
 
 
 #### 2.2.2 ReLU_x86
-ReLU_x86，顾名思义，该类是ReLU算子针对x86平台的优化实现，从其实现可以看出它使用了x86平台的SSE。而前面的ReLU
+ReLU_x86，顾名思义，该类是ReLU算子针对x86平台的优化实现，从其实现可以看出它在使用OpenMP技术优化的同时，还使用了x86平台支持的SSE2、AVX、AVX512F指令集对循环内核进行了优化。此外，还支持int8类型的输入数据，输入数据的默认类型为float32。
 
 实现源码：[relu_x86.h](https://github.com/Tencent/ncnn/blob/master/src/layer/x86/relu_x86.h)、[relu_x86.cpp](https://github.com/Tencent/ncnn/blob/master/src/layer/x86/relu_x86.cpp)
 
+- SSE2、AVX、AVX512F能处理的向量宽度依次为128位、256位和512位，因此处理时，先尽量使用AVX512指令处理，剩下的不够512b时，再尽量使用AVX指令来处理，剩下的不够256b时，再尽量使用SSE2指令来处理，身下不够128b时，再使用CPU指令来处理，直到全部处理完成为止；
+- __m512：AVX512指令集中表示单精度浮点数向量的数据类型，对应512位寄存器，可存储16个32位浮点数（共16×32=512位）。它是AVX512指令（一种SIMD指令[单指令多数据]）能操作的最大颗粒度，通过它AVX512指令可以同时对其中的16个浮点数执行并行处理；
+- [_mm512_setzero_ps](https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm512_setzero_ps&ig_expand=5868,4103,5868)：构建一个包含16个全0单精度浮点数的512位的向量；该操作对应汇编指令vpxorq；
+- [_mm512_loadu_ps](https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm512_loadu_ps&ig_expand=5868,4103)：从指定地址的内存中加载16个单精度浮点数构建一个512位的向量。其中的u（unaligned）表示支持未对齐的内存地址。该操作对应汇编指令vmovups；
+- [_mm512_max_ps](https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm512_max_ps&ig_expand=5868,4103,5868,4103,4363)：对两个512位的向量进行逐元素比较，返回每个位置的较大者。该操作对应汇编指令vmaxps；
+- [_mm512_storeu_ps](https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm512_storeu_ps&ig_expand=5868,4103,5868,4103,4363,6545)：将一个512位的向量保存到指定地址的内存中。其中的u（unaligned）表示支持未对齐的内存地址。该操作对应汇编指令vmovups；
+- 其它指令类似，只是位数不一样，就不在此一一赘述了；
 
-参考资料：
-[《神经网络中的激活函数——ReLU函数》](https://blog.csdn.net/Seu_Jason/article/details/138906388)
+
+#### 2.2.2 ReLU_arm
+ReLU_arm，顾名思义，该类是ReLU算子针对arm平台的优化实现，从其实现可以看出它在使用OpenMP技术优化的同时，还采用内联汇编代码或ARM NEON指令集对循环内核进行了优化。此外，还支持int8、fp16、bf16这三种类型的输入数据，输入数据的默认类型为float32。
+|数据类型|数值范围|精度（尾数位）|主要特点|
+|---|---|---|---|
+|int8|[-128,127]或[0,255]|无尾数位|仅表示离散整数，无小数精度|
+|fp16|±65504|1位符号位<br>5位指数位<br>10位尾数位|高精度但范围小，易出现溢出问题|
+|bf16|±6.55×10^38|1位符号位<br>8位指数位<br>7位尾数位|大范围但低精度，适合梯度计算|
+
+实现源码：[relu_arm.h](https://github.com/Tencent/ncnn/blob/master/src/layer/arm/relu_arm.h)、[relu_arm.cpp](https://github.com/Tencent/ncnn/blob/master/src/layer/arm/relu_arm.cpp)
+
+- float32x4_t：Neon指令集中表示单精度浮点数向量的数据类型，对应128位寄存器，可存储4个32位浮点数（共4x32=128位）。它是Neon指令（一种SIMD指令[单指令多数据]）能操作的最大颗粒度，通过它Neon指令可以同时对其中的4个浮点数执行并行处理；
+- [vdupq_n_f32](https://developer.arm.com/architectures/instruction-sets/intrinsics/#f:@navigationhierarchiessimdisa=[Neon]&q=vdupq_n_f32)：构建一个包含4个全0单精度浮点数的128位的向量，并将其写入到一个SIMD&FP寄存器中。该操作对应汇编指令dup；
+- [vld1q_f32](https://developer.arm.com/architectures/instruction-sets/intrinsics/#f:@navigationhierarchiessimdisa=[Neon]&q=vld1q_f32)：从指定地址的内存中加载4个单精度浮点数构建一个128位的向量，并将其写入到一个SIMD&FP寄存器中。该操作对应汇编指令ld1；另外还有一条指令vld1q_f32_x4，可以一次性加载512位的向量；
+- [vmaxq_f32](https://developer.arm.com/architectures/instruction-sets/intrinsics/#f:@navigationhierarchiessimdisa=[Neon]&q=vmaxq_f32)：对两个128位向量中的4个单精度浮点数进行逐元素比较，返回每个位置的较大者。该操作对应汇编指令fmax；
+- [vst1q_f32](https://developer.arm.com/architectures/instruction-sets/intrinsics/#f:@navigationhierarchiessimdisa=[Neon]&q=vst1q_f32)：将一个SIMD&FP寄存器中包含4个单精度浮点数的128位向量写入到指定地址的内存中。该操作对应汇编指令st1；另外还有一条指令vst1q_f32_x4，可以一次性保存512位的向量；
 
 
 ### 2.3 优化技术
@@ -643,7 +668,7 @@ ReLU_x86，顾名思义，该类是ReLU算子针对x86平台的优化实现，�
 OpenMP(Open Multi-Processing)
 
 #### 2.3.2 SIMD
-x86平台上，SIMD(Single Instruction Multiple Data，单指令多数据)技术通过扩展指令集来实现并行计算能力的提升：
+x86平台上，通过扩展SIMD(Single Instruction Multiple Data，单指令多数据)指令集来实现并行计算能力的提升：
 1. SSE2（Streaming SIMD Extensions 2）
     - 向量宽度：128位，支持双精度浮点和整数运算。
     - 指令规模：144条指令，首次实现64位双精度浮点并行计算。
@@ -666,6 +691,23 @@ x86平台上，SIMD(Single Instruction Multiple Data，单指令多数据)技术
 |寄存器数|8（XMM）|16（YMM）|32（ZMM）|
 |峰值加速比|2-4倍（标量对比）|4-8倍（SSE2对比）|8-16倍（AVX对比）
 |典型功耗|低|中|高|
+
+arm平台上，也是通过扩展SIMD(Single Instruction Multiple Data，单指令多数据)指令集来实现并行计算能力的提升：
+1. NEON：固定长度的SIMD指令集
+   - 固定矢量长度：使用128位寄存器（如float32x4_t），支持分割为不同数据宽度的通道（如4个float32、8个int16）。
+   - 应用场景：多媒体处理（图像/音频编解码）、传统机器学习推理等低复杂度并行计算。
+2. SVE（Scalable Vector Extension）：可变长度矢量指令集
+   - 灵活矢量长度：支持128-2048位（以128位为步长），同一代码可适配不同硬件。
+   - 动态执行模式：运行时通过指令获取矢量长度（VL），避免手动配置，提升代码可移植性。
+   - 高级功能：支持掩码运算（8个Predicate寄存器）、非对齐内存访问，优化不规则数据操作。
+3. SVE2：SVE的功能扩展与增强
+   - 功能扩展：新增指令支持计算机视觉、5G信号处理、矩阵运算等场景。
+   - 矩阵运算支持：集成矩阵乘加操作（如SME2扩展），为AI推理提供硬件加速。
+   - SVE2通过矩阵扩展（SME2）和KleidiAI软件栈，成为ARM在AI推理和通用计算的核心竞争力
+
+[Intel® Intrinsics Guide](https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html)<br>
+[ARM® Neon® Intrinsics](https://developer.arm.com/architectures/instruction-sets/intrinsics/#f:@navigationhierarchiessimdisa=[Neon])<br>
+[SMID加速：AVX512指令集实战](https://www.cnblogs.com/ai168/p/18713383)
 
 ## 三、硬件平台
 
