@@ -564,7 +564,7 @@ class Layer {
 namespace ncnn { DEFINE_LAYER_CREATOR(ReLU) }
 ...
 ```
-算子在文件ncnn/build/src/layer_registry.h中注册，该文件是在编译时自动生成的。每一个算子都有一个对应的注册项，譬如ReLU算子：
+算子在文件ncnn/build/src/layer_registry.h中注册，该文件包括11个算子注册表，它们是在编译时自动生成的。每一个算子都在对应的注册表中有一个对应的注册项，譬如ReLU算子：
 ```c++
 static const layer_registry_entry layer_registry[] = {
 ...
@@ -581,7 +581,6 @@ ncnn还为每一个算子分配了一个唯一的索引，索引集中在文件n
 ReLU = 26,
 ...
 ```
-
 
 #### 2.1.2 创建算子
 算子的创建由下面的一组函数负责，既可以通过算子的名字（下面名为type的参数）来创建指定的算子，也可以通过算子的索引来创建指定的算子：
@@ -601,6 +600,50 @@ NCNN_EXPORT Layer* create_layer_cpu(int index);
 NCNN_EXPORT Layer* create_layer_vulkan(int index);
 #endif // NCNN_VULKAN
 ```
+它们之间的调用关系如下所示:
+```mermaid
+graph TD
+  subgraph o
+    T0[上层调用]
+    style T0 fill:#4CAF50,stroke:#388E3C,color:white
+
+    A1[A1<br>Layer* create_layer       <br>const char* type]
+    A2[A2<br>Layer* create_layer_naive <br>const char* type]
+    A3[A3<br>Layer* create_layer_cpu   <br>const char* type]
+    A4[A4<br>Layer* create_layer_vulkan<br>const char* type]
+
+    B1[B1<br>Layer* create_layer       <br>int index]
+    B2[B2<br>Layer* create_layer_native<br>int index]
+    B3[B3<br>Layer* create_layer_cpu   <br>int index]
+    B4[B4<br>Layer* create_layer_vulkan<br>int index]
+
+    E1[E1<br>layer_registry_avx512]
+    E2[... ... ... ... ... ... ...]
+    E3[E3<br>layer_registry_vulkan]
+    E4[E4<br>layer_registry_arch]
+    E5[E5<br>layer_registry]
+
+    class E1,E2,E3,E4,E5 subnode
+    classDef subnode fill:#9C27B0,stroke:#7B1FA2,color:white
+
+    T0 --> A1
+    T0 --> A2
+    T0 --> A3
+    T0 --> A4
+    A1 --> B1
+    A2 --> B2
+    A3 --> B3
+    B1 --> B3
+    B1 --> B4
+    A4 --> B4
+    B4 --> E3
+    B3 --> E1
+    B3 --> E2
+    B3 --> E4
+    B2 --> E5
+    B3 --> E5
+  end
+```
 譬如创建ReLU算子：
 ```c++
 Layer* relu = create_layer("ReLU");
@@ -614,7 +657,7 @@ Layer* relu = create_layer(ReLU);
 #### 2.2.1 ReLU
 ReLU（Rectified Linear Unit，修正线性单元）是深度学习中最常用的激活函数之一，其数学表达式为：<br>
 f(x) = max(0, x)<br>
-即当输入值大于0时输出原值，否则输出0。函数图像为：
+即当输入值大于0时输出原值，否则输出0。函数图像为：<br>
 ![alt text](relu.png)
 
 实现源码：[relu.h](https://github.com/Tencent/ncnn/blob/master/src/layer/relu.h)、[relu.cpp](https://github.com/Tencent/ncnn/blob/master/src/layer/relu.cpp)
@@ -662,7 +705,177 @@ ReLU_arm，顾名思义，该类是ReLU算子针对arm平台的优化实现，�
 - [vst1q_f32](https://developer.arm.com/architectures/instruction-sets/intrinsics/#f:@navigationhierarchiessimdisa=[Neon]&q=vst1q_f32)：将一个SIMD&FP寄存器中包含4个单精度浮点数的128位向量写入到指定地址的内存中。该操作对应汇编指令st1；另外还有一条指令vst1q_f32_x4，可以一次性保存512位的向量；
 
 
-### 2.3 优化技术
+#### 2.2.3 ReLU_vulkan
+
+### 2.3 模型参数
+模型参数文件的格式详见官方文档：[param and model file structure](https://github.com/Tencent/ncnn/blob/master/docs/developer-guide/param-and-model-file-structure.md)，模型参数的加载由文件[net.h](https://github.com/Tencent/ncnn/blob/master/src/net.h)、[net.cpp](https://github.com/Tencent/ncnn/blob/master/src/net.cpp)中定义的接口实现，它们之间的调用关系如下所示:
+```mermaid
+graph LR
+  A[int Net::load_param<br>const char* protopath]
+  B[int Net::load_param<br>FILE* fp]
+  C[int Net::load_param<br>const DataReader& dr]
+
+  E1[Layer* Net::create_overwrite_builtin_layer<br>const char* type]
+  E2[Layer* create_layer_cpu<br>const char* type]
+  E3[Layer* create_layer_vulkan<br>const char* type]
+  E4[Layer* Net::create_custom_layer<br>const char* type]
+
+  F1[Layer* Net::create_overwrite_builtin_layer<br>int typeindex]
+  F4[Layer* Net::create_custom_layer<br>int typeindex]
+
+  A --> B
+  B --Data<br>Reader<br>From<br>Stdio--> C
+  C ~~~ HUB0(( ))
+  HUB0 --> E1
+  HUB0 --> E2
+  HUB0 --> E3
+  HUB0 --> E4
+  E1 --> F1
+  E4 --> F4
+  
+  style A fill:#4CAF50,stroke:#388E3C,color:white
+  linkStyle 2 stroke:#FF5722,stroke-width:1.5px
+  class E2,E3,F1,F4 subnode
+  classDef subnode fill:#9C27B0,stroke:#7B1FA2,color:white
+```
+```mermaid
+graph LR
+  A1[int Net::load_param_bin<br>const char* protopath]
+  A2[int Net::load_param_mem<br>const char* _mem]
+  B1[int Net::load_param_bin<br>FILE* fp]
+  B2[int Net::load_param<br>const unsigned char* _mem]
+  C[int Net::load_param_bin<br>const DataReader& dr]
+
+  M1[Layer* Net::create_overwrite_builtin_layer<br>const char* type]
+  M2[Layer* create_layer_cpu<br>const char* type]
+  M3[Layer* create_layer_vulkan<br>const char* type]
+  M4[Layer* Net::create_custom_layer<br>const char* type]
+
+  N1[Layer* Net::create_overwrite_builtin_layer<br>int typeindex]
+  N4[Layer* Net::create_custom_layer<br>int typeindex]
+
+  A1 --> B1
+  A2 --> B2
+  B1 --Data<br>Reader<br>From<br>Stdio --> C
+  B2 --Data<br>Reader<br>From<br>Memory--> C
+  C ~~~ HUB0(( ))
+  HUB0 --> M1
+  HUB0 --> M2
+  HUB0 --> M3
+  HUB0 --> M4
+  M1 --> N1
+  M4 --> N4
+  
+  style A1 fill:#4CAF50,stroke:#388E3C,color:white
+  style A2 fill:#4CAF50,stroke:#388E3C,color:white
+  linkStyle 4 stroke:#FF5722,stroke-width:1.5px
+  class M2,M3,N1,N4 subnode
+  classDef subnode fill:#9C27B0,stroke:#7B1FA2,color:white
+```
+其中，接口create_overwrite_builtin_layer和create_custom_layer用于创建用户自定义的算子，而用户自定义的算子则由接口Net::register_custom_layer负责注册。注册时，如果算子已经存在于全局注册表layer_registry中，则将该算子注册到专属于本模型的注册表overwrite_builtin_layer_registry中，其优先级最高。如果算子没存在于全局注册表layer_registry中，则将该算子注册到专属于本模型的注册表custom_layer_registry中，其优先级最低。
+
+另外提一点，int Net::load_param(const char* protopath)接口加载的参数文件A与int Net::load_param_bin(const char* protopath)接口加载的参数文件B之间是什么关系？还有int Net::load_param(const unsigned char* _mem)接口加载的_mem数据与它们之间又是什么关系呢？文件A和_mem是文件B经过命令ncnn2mem转换而得；
+```shell
+ls -l
+  total 4840
+  -rw-rw-r-- 1 qy qy 4942088 3月   4 23:21 squeezenet_v1.1.bin
+  -rw-rw-r-- 1 qy qy    8881 3月   4 23:21 squeezenet_v1.1.param
+ncnn2mem squeezenet_v1.1.param squeezenet_v1.1.bin squeezenet_v1.1.param.id.h squeezenet_v1.1.param.mem.h
+ls -l
+  total 29308
+  -rw-rw-r-- 1 qy qy  4942088 3月   4 23:21 squeezenet_v1.1.bin
+  -rw-rw-r-- 1 qy qy     8881 3月   4 23:21 squeezenet_v1.1.param
+  -rw-rw-r-- 1 qy qy     3792 3月   4 23:22 squeezenet_v1.1.param.bin
+  -rw-rw-r-- 1 qy qy     7114 3月   4 23:22 squeezenet_v1.1.param.id.h
+  -rw-rw-r-- 1 qy qy 25038960 3月   4 23:22 squeezenet_v1.1.param.mem.h
+```
+
+下面是接口int Net::load_param(const DataReader& dr)解析模型参数的详细流程：
+```mermaid
+graph LR
+  A[开始]
+  B[读取<br>magic<br>码]
+  C[读取<br>算子<br>数和<br>blob<br>数]
+  D[读取<br>算子<br>类型<br>和名<br>字]
+  E[读取<br>算子<br>输入<br>数和<br>输出<br>数]
+  F[创建<br>算子<br>实例]
+  G@{ shape: circle, label: "配置<br>算子" }
+  H[结束]
+
+  I0{magic<br>码为<br>7767<br>517？}
+  I1{算子<br>数和<br>blob<br>数大<br>于0？}
+  I2{最后<br>一个<br>算子?}
+  
+  HUB0(( ))
+  HUB1(( ))
+
+  A  --> B
+  B  --> I0
+  I0 --> |Yes|C
+  I0 --> |No|HUB0
+  C  --> I1
+  I1 --> |Yes|HUB1
+  I1 --> |No|HUB0
+  HUB1 --> D
+  D --> E
+  E --> F
+  F --> G
+  G --> I2
+  I2 --> |Yes|HUB0
+  I2 --> |No|HUB1
+  HUB0 --> H
+
+  style A fill:#4CAF50,stroke:#388E3C,color:white
+  style G fill:#FF0000,stroke:#7B1FA2,color:white
+  style H fill:#9C27B0,stroke:#7B1FA2,color:white
+```
+上图可以看出，解析出模型中的算子数和blob数后，立即resize模型类的两个std::vector类型的成员变量layers（算子列表）和blobs（blob列表），随后便进入for循环来初始化算子列表和blob列表。初始化的核心工作是创建算子、配置算子（设置算子的type和name、输入blob的索引列表、输出blob的索引列表，解析算子的参数，设置算子的输入的shape hints、输出的shape hints，最后加载算子参数）和配置blob（设置blob的name、producer和consumer，设置算子的输入blob的shape hints）。
+```mermaid
+graph LR
+  A[Input]
+  X1@{ shape: cyl, label: "blob1" }
+  B[算子1]
+  X2@{ shape: cyl, label: "blob2" }
+  C[算子2]
+  X3@{ shape: cyl, label: "blob3" }
+  D[...]
+
+  A   --> |produce|X1
+  X1  --> |consume|B
+  B   --> |produce|X2
+  X2  --> |consume|C
+  C   --> |produce|X3
+  X3 -.-> |consume|D
+```
+
+### 2.4 模型权重
+模型权重文件的格式详见官方文档：[param and model file structure](https://github.com/Tencent/ncnn/blob/master/docs/developer-guide/param-and-model-file-structure.md)，模型权重的加载由文件[net.h](https://github.com/Tencent/ncnn/blob/master/src/net.h)、[net.cpp](https://github.com/Tencent/ncnn/blob/master/src/net.cpp)中定义的接口实现，它们之间的调用关系如下所示:
+
+```mermaid
+graph LR
+  A1[int Net::load_model<br>const char* modelpath]
+  A2[int Net::load_model<br>const unsigned char* _mem]
+  B1[int Net::load_model<br>FILE* fp]
+  C[int Net::load_model<br>const DataReader& dr]
+
+  M1[int Layer::load_model<br>const ModelBin& mb]
+  M4[int Layer::create_pipeline<br>const Option& opt]
+
+  A1 --> B1
+  B1 --Data<br>Reader<br>From<br>Stdio --> C
+  A2 --Data<br>Reader<br>From<br>Memory--> C
+  C ~~~ HUB0(( ))
+  HUB0 --> M1
+  HUB0 --> M4
+  
+  style A1 fill:#4CAF50,stroke:#388E3C,color:white
+  style A2 fill:#4CAF50,stroke:#388E3C,color:white
+  linkStyle 3 stroke:#FF5722,stroke-width:1.5px
+  class M1,M4 subnode
+  classDef subnode fill:#9C27B0,stroke:#7B1FA2,color:white
+```
+
+### 2.8 优化技术
 
 #### 2.3.1 OpenMP
 OpenMP(Open Multi-Processing)
@@ -692,6 +905,7 @@ x86平台上，通过扩展SIMD(Single Instruction Multiple Data，单指令多�
 |峰值加速比|2-4倍（标量对比）|4-8倍（SSE2对比）|8-16倍（AVX对比）
 |典型功耗|低|中|高|
 
+
 arm平台上，也是通过扩展SIMD(Single Instruction Multiple Data，单指令多数据)指令集来实现并行计算能力的提升：
 1. NEON：固定长度的SIMD指令集
    - 固定矢量长度：使用128位寄存器（如float32x4_t），支持分割为不同数据宽度的通道（如4个float32、8个int16）。
@@ -705,9 +919,21 @@ arm平台上，也是通过扩展SIMD(Single Instruction Multiple Data，单指�
    - 矩阵运算支持：集成矩阵乘加操作（如SME2扩展），为AI推理提供硬件加速。
    - SVE2通过矩阵扩展（SME2）和KleidiAI软件栈，成为ARM在AI推理和通用计算的核心竞争力
 
-[Intel® Intrinsics Guide](https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html)<br>
+|特性|NEON|SVE|SVE2|
+|---|---|---|---|
+|向量长度|固定128位|可变（128-2048位）|同SVE，支持更多功能|
+|指令复杂度|简单，直接编码数据类型|复杂，需动态配置长度和掩码|更复杂，新增矩阵运算指令|
+|兼容性|独立指令集|覆盖NEON，复用低128位寄存器|全面覆盖NEON和SVE|
+|应用场景|多媒体、轻量级ML|HPC、大规模ML训练|AI、计算机视觉、5G、通用计算|
+|代码移植成本|高（固定长度限制扩展）|低（同一代码适配不同硬件）|低（继承SVE特性）|
+|硬件案例|主流ARM芯片（如Cortex-A系列）|富士通A64FX（超算富岳）|ARMv9设备（如Cortex-X925）|
+
+
+[ARM® Development Documentation](https://developer.arm.com/documentation)<br>
 [ARM® Neon® Intrinsics](https://developer.arm.com/architectures/instruction-sets/intrinsics/#f:@navigationhierarchiessimdisa=[Neon])<br>
+[Intel® Intrinsics Guide](https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html)<br>
 [SMID加速：AVX512指令集实战](https://www.cnblogs.com/ai168/p/18713383)
+
 
 ## 三、硬件平台
 
