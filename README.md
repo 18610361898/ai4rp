@@ -498,6 +498,9 @@ graph LR
 ## 二、深入ncnn
 ncnn是基于C++的轻量级神经网络框架，主要用于嵌入式设备上的高性能推理。它支持多种模型格式，包括ONNX、TensorFlow Lite等，并提供了丰富的算子支持和优化技术，以实现高效的计算和低延迟的推断。接下来的学习思路是从几个典型算子切入，研究算子的具体实现、性能优化和跨平台实现，然后逐步上升到图等，直到完成ncnn软件架构的梳理。
 
+[ncnn的设计理念和软件工程](https://news.qq.com/rain/a/20210201A09MJV00)<br>
+[ncnn：int8量化推理大幅优化超500％](https://news.qq.com/rain/a/20210511A0BDI100)<br>
+[开源推理框架TNN模型部署加速与优化](https://news.qq.com/rain/a/20210917A0BVQP00)
 
 ### 2.1 算子基类
 ncnn实现了近百个算子，详细清单参见官方文档[《operators》](https://github.com/Tencent/ncnn/blob/master/docs/developer-guide/operators.md)。ncnn中，几乎所有的算子都是基类Layer的派生类，为此在研究某个算子的实现之前，需要先了解基类Layer的定义。
@@ -708,7 +711,7 @@ ReLU_arm，顾名思义，该类是ReLU算子针对arm平台的优化实现，�
 #### 2.2.3 ReLU_vulkan
 
 ### 2.3 模型参数
-模型参数文件的格式详见官方文档：[param and model file structure](https://github.com/Tencent/ncnn/blob/master/docs/developer-guide/param-and-model-file-structure.md)，模型参数的加载由文件[net.h](https://github.com/Tencent/ncnn/blob/master/src/net.h)、[net.cpp](https://github.com/Tencent/ncnn/blob/master/src/net.cpp)中定义的接口实现，它们之间的调用关系如下所示:
+ncnn模型参数文件的格式详见官方文档：[param and model file structure](https://github.com/Tencent/ncnn/blob/master/docs/developer-guide/param-and-model-file-structure.md)，模型参数的加载由文件[net.h](https://github.com/Tencent/ncnn/blob/master/src/net.h)、[net.cpp](https://github.com/Tencent/ncnn/blob/master/src/net.cpp)中定义的接口实现，它们之间的调用关系如下所示:
 ```mermaid
 graph LR
   A[int Net::load_param<br>const char* protopath]
@@ -849,7 +852,7 @@ graph LR
 ```
 
 ### 2.4 模型权重
-模型权重文件的格式详见官方文档：[param and model file structure](https://github.com/Tencent/ncnn/blob/master/docs/developer-guide/param-and-model-file-structure.md)，模型权重的加载由文件[net.h](https://github.com/Tencent/ncnn/blob/master/src/net.h)、[net.cpp](https://github.com/Tencent/ncnn/blob/master/src/net.cpp)中定义的接口实现，它们之间的调用关系如下所示:
+ncnn模型权重文件的格式详见官方文档：[param and model file structure](https://github.com/Tencent/ncnn/blob/master/docs/developer-guide/param-and-model-file-structure.md)，模型权重的加载由文件[net.h](https://github.com/Tencent/ncnn/blob/master/src/net.h)、[net.cpp](https://github.com/Tencent/ncnn/blob/master/src/net.cpp)中定义的接口实现，它们之间的调用关系如下所示:
 
 ```mermaid
 graph LR
@@ -875,7 +878,30 @@ graph LR
   classDef subnode fill:#9C27B0,stroke:#7B1FA2,color:white
 ```
 
+
+### 2.5 模型推理
+从ncnn实现的角度来看，模型推理的本质就是输入数据依次经过模型中每一个算子进行处理的过程，即依次调用每个算子的forward/forward_inplace接口对输入数据进行处理。下图为模型推理的流程以及与此相关的关键数据结构：
+![推理的流程以及关键数据结构](inference.png)
+上图中，类Net是一个通用的神经网络类，其通过接口load_param加载可以加入ncnn模型参数，加载完模型参数后，便构建了两个算子列表：算子列表（layers）以及blob列表(blobs)。此外，前者通过后者构成了一个数据处理pipeline：每个blob都会指向一个producer和/或一个consumer，同时还会指向一个Mat，该Mat是proudcer（上一个算子）的输出，即其生成的数据，同时也是consumer（下一个算子）的输入，即其要处理的数据。类Extractor应该是一个辅助类，它一方面维护了一次推理过程中要用的一组与blob列表一一对应的Mat列表，另一方面提供extract接口用于启动一次数据处理pipeline。
+
+经过实测发现，每次推理都需要重新创建一个Extractor类对象，否则如果连续推理，则第二次以及后面的推理都无效，这是因为Extractor中维护的Mat列表的最后一个Mat的dims不等于0，从而导致第二次及后面的推理没有进行：
+```c++
+int Extractor::extract(int blob_index, Mat& feat, int type)
+{
+  ...
+  if (d->blob_mats[blob_index].dims == 0)
+  {
+    int layer_index = d->net->blobs()[blob_index].producer;
+    ...
+    ret = d->net->d->forward_layer(layer_index, d->blob_mats, d->opt);
+  }
+  feat = d->blob_mats[blob_index];
+}
+```
+
+
 ### 2.8 优化技术
+
 
 #### 2.3.1 OpenMP
 OpenMP(Open Multi-Processing)
