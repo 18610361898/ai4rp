@@ -6,7 +6,7 @@ ncnn是一个为手机端极致优化的高性能神经网络前向计算框架�
 
 [官方GitHub链接](https://github.com/Tencent/ncnn)
 
-接下来的思路是：先在x86+ubuntu20.04的虚拟机上编译安装ncnn，然后尝试运行其中的几个example，接着分析这几个example的程序源码，了解基于ncnn开发AI应用程序的流程，最后深入学习ncnn的核心源码，梳理其软件架构，尤其是性能优化方面的设计思想。
+接下来的思路是：先在x86平台+ubuntu20.04系统的虚拟机上编译安装ncnn，然后尝试运行其中的几个example，接着分析这几个example的源码，了解基于ncnn（runtime库）开发AI应用程序时的接口调用流程，最后深入学习ncnn的内核源码，梳理其软件架构，尤其是性能优化方面的设计思想。
 
 
 ### 1.1 编译安装
@@ -24,12 +24,12 @@ git submodule update --init
 sudo apt install build-essential git cmake libprotobuf-dev protobuf-compiler libomp-dev libopencv-dev
 sudo apt install vulkan-utils
 ```
-安装完成后，执行下面的命令来确认编译时能否启用VULKAN（GPU加速），如果有相关的信息输出，则说明可以使能VULKAN，即cmake时加上-DNCNN_VULKAN：
+安装完成后，请执行下面的命令来确认编译时能否启用VULKAN（即GPU加速），如果有GPU相关的信息输出，则说明可以启用VULKAN，即cmake时加上-DNCNN_VULKAN：
 ```shell
-vulkaninfo        # 确认是否支持VULKAN
-vulkaninfo --html # 生成html格式的VULKAN信息，方便查看
+vulkaninfo        # 确认系统是否有GPU可用，是则可启用VULKAN
+vulkaninfo --html # 生成详细的HTML格式的VULKAN信息，方便查看
 ```
-<font color="red"><b>备注：如无特殊说明，后续的shell命令均在ncnn目录下执行。</b></font>
+<font color="red"><b>备注：如无特殊说明，后续的shell命令均是在ncnn目录下执行。</b></font>
 
 - 编译安装
 ```shell
@@ -42,29 +42,29 @@ make -j${N}
 cd ..
 ```
 
-编译生成的二进制文件位于build目录下不同的子目录中，其中如下几个目录中的文件比较关键：
-- src/libncnn.a：静态链接库，用于开发基于ncnn的AI应用程序（没看到动态链接库）；
-- examples目录下的二进制：可执行的example程序，用于测试对应的算法模型；
-- tools目录下的二进制：用于将各种格式的模型转换ncnn模型、量化工具等，详情如下：
+编译生成的二进制文件位于build目录下不同的子目录中，其中如下几个目录中的二进制文件比较关键：
+- src/libncnn.a：静态链接库，用于开发基于ncnn的AI应用程序，<font color="red">没看到动态链接库，为啥不生成呢？</font>
+- examples目录下的二进制程序：可执行的example程序，用于测试对应的算法模型；
+- tools目录下的二进制程序：用于将各种格式的模型转换ncnn模型、量化和优化工具，详情如下：
   | 工具 | 功能 | 位置 | 备注 |
   |--|--|--|--|
-  |ncnn2mem    |将ncnn模型文件转换为二进制描述文件和内存模型，<br>生成*.param.bin和两个静态数组的代码文件|build/tools|避免模型参数文件明文|
+  |ncnn2mem    |将ncnn模型文件转换为二进制描述文件和内存模型，生成*.param.bin和两个静态数组的代码文件|build/tools|避免模型参数文件明文|
   |ncnnmerge   |
   |ncnnoptimize|
-  |caffe2ncnn  |将Caffe模型（\*.prototxt+\*.caffemodel）转换为<br>ncnn模型（\*.param+\*.bin）|build/tools/caffe|只认新版的caffe模型|
-  |onnx2ncnn   |将ONNX模型（\*.onnx）转换为ncnn模型<br>（\*.param+\*.bin）|build/tools/onnx|deprecated，后续将不再维护<br>官方推荐使用PNNX|
+  |caffe2ncnn  |将Caffe模型（\*.prototxt+\*.caffemodel）转换为ncnn模型（\*.param+\*.bin）|build/tools/caffe|只认新版的caffe模型|
+  |onnx2ncnn   |将ONNX模型（\*.onnx）转换为ncnn模型（\*.param+\*.bin）|build/tools/onnx|deprecated，后续将不再维护官方推荐使用PNNX|
   |mxnet2ncnn  |
   |darknet2ncnn|
   |ncnn2int8   |
   |ncnn2table  |
 
-为方便执行tools目录下的命令，可以将它们所在的目录添加到PATH环境变量中，进入ncnn目录执行下面命令：
+为方便使用tools目录下的工具，可以将它们所在的目录添加到环境变量PATH中，进入ncnn目录执行下面命令：
 ```shell
 if [ -d "$(pwd)/build/tools" ]; then
     export PATH=$(pwd)/build/tools:$(pwd)/build/tools/caffe:$(pwd)/build/tools/onnx:$(pwd)/build/tools/mxnet:$(pwd)/build/tools/darknet:$(pwd)/build/quantize:$PATH
 fi
 ```
-执行下面命令在~/.bashrc文件尾部添加两行，然后执行source ~/.bashrc命令也可以，而且可以一劳永逸：
+或者执行下面命令以在~/.bashrc文件尾部添加两行export，然后执行source ~/.bashrc，这样还可以一劳永逸：
 ```shell
 echo "export NCNN_ROOT=$(pwd)
 export PATH=$NCNN_ROOT/build/tools:$NCNN_ROOT/build/tools/caffe:$NCNN_ROOT/build/tools/onnx:$NCNN_ROOT/build/tools/mxnet:$NCNN_ROOT/build/tools/darknet:$NCNN_ROOT/build/quantize:$PATH" >> ~/.bashrc
@@ -72,39 +72,37 @@ export PATH=$NCNN_ROOT/build/tools:$NCNN_ROOT/build/tools/caffe:$NCNN_ROOT/build
 
 
 ### 1.2 运行示例squeezenet
-- squeezenet是什么？
-  
-  SqueezeNet 是一种轻量级卷积神经网络模型，主要用于图像分类任务（1000类，通imagenet），其核心设计目标是通过优化网络结构和压缩技术，在保证精度的前提下大幅减少模型参数和计算量，使其适用于移动端、嵌入式设备等资源受限场景。在 ImageNet数据集上达到与AlexNet相近的准确率（Top-1准确率约57%），但参数量仅为AlexNet的1/50，模型体积缩小510倍（结合Deep Compression压缩技术）。
-  [SqueezeNet: AlexNet-level accuracy with 50x fewer parameters and <0.5MB model size](https://arxiv.org/abs/1602.07360)
+
+- squeezenet是什么？  
+  SqueezeNet 是一种轻量级卷积神经网络模型，主要用于图像分类任务（1000类，通imagenet），其核心设计目标是通过优化网络结构和压缩技术，在保证精度的前提下大幅减少模型参数和计算量，使其适用于移动端、嵌入式设备等资源受限场景。在 ImageNet数据集上达到与AlexNet相近的准确率（Top-1准确率约57%），但参数量仅为AlexNet的1/50，模型体积缩小510倍（结合Deep Compression压缩技术）。<br>
+  [参考论文：《SqueezeNet: AlexNet-level accuracy with 50x fewer parameters and <0.5MB model size》](https://arxiv.org/abs/1602.07360)
 
 - 运行squeezenet
-```shell
-cd examples
-../build/examples/squeezenet ../images/256-ncnn.png
-  532 = 0.165951
-  920 = 0.094098
-  716 = 0.062193
-cd ..
-```
-图片../images/256-ncnn.png如下所示，结合下面的1000分类标签，识别出来top1的是"dining table, board"，与[《how to build》](https://github.com/Tencent/ncnn/blob/master/docs/how-to-build/how-to-build.md)中的[Verification](https://github.com/Tencent/ncnn/blob/master/docs/how-to-build/how-to-build.md#verification)给出的一致。
-
-![256-ncnn.png](256-ncnn.png)<br>
+  ```shell
+  cd examples
+  ../build/examples/squeezenet ../images/256-ncnn.png
+    532 = 0.165951
+    920 = 0.094098
+    716 = 0.062193
+  cd ..
+  ```
+  图片../images/256-ncnn.png如下所示，结合下面的1000分类标签，识别出来top1的是"dining table, board"，这与[《how to build》](https://github.com/Tencent/ncnn/blob/master/docs/how-to-build/how-to-build.md)中的[Verification](https://github.com/Tencent/ncnn/blob/master/docs/how-to-build/how-to-build.md#verification)一节给出的结果是一致的。<br>
+  ![256-ncnn.png](256-ncnn.png)<br>
 
 - 1000分类的标签
-  
   - nihui上的[synset_words.txt](https://github.com/nihui/ncnn-android-squeezenet/blob/master/app/src/main/assets/synset_words.txt) 
   - onnx上的[synset.txt](https://github.com/onnx/models/blob/main/validated/vision/classification/synset.txt)
-  - ncnn自带的：examples/synset_words.txt
-  
+  - ncnn自带的：examples/synset_words.txt文件
+
   后续的程序中我们使用ncnn自带的examples/synset_words.txt文件。
 
-- 模型参数和权重
-  - 模型权重：examples/squeezenet_v1.1.bin
+- 模型的参数和权重
   - 模型参数：examples/squeezenet_v1.1.param
+  - 模型权重：examples/squeezenet_v1.1.bin
 
 
 ### 1.3 分析squeezenet源码
-示例squeezenet的源码：[squeezenet.cpp](https://github.com/Tencent/ncnn/blob/master/examples/squeezenet.cpp)
+squeezenet的源码：[squeezenet.cpp](https://github.com/Tencent/ncnn/blob/master/examples/squeezenet.cpp)
 
 - 基于ncnn的AI应用squeezenet的流程图
 ```mermaid
@@ -144,8 +142,7 @@ graph LR
     linkStyle 0,4,12 stroke:#FF5722,stroke-width:1.5px
 ```
 
-- 核心函数detect_squeezenet源码分析
-
+- 核心函数detect_squeezenet的源码分析
 1. **函数定义**:
    - `static int detect_squeezenet(const cv::Mat& bgr, std::vector<float>& cls_scores)`:
      - 该函数是一个静态函数，它接收一个`cv::Mat`类型的图像数据（BGR格式）作为输入参数，一个`std::vector<float>`类型向量的引用作为输出参数。`cv::Mat`是OpenCV中用于存储图像的类。
@@ -169,7 +166,7 @@ graph LR
    - `ncnn::Extractor ex = squeezenet.create_extractor();`: 创建一个基于SqueuezeNet模型的特征提取器对象，它使用SqueuezeNet模型进行推理以从输入的图像数据中提取特征。
    - `ex.input("data", in);`: 将预处理后的图像数据输入给特征提取器，这里的"data"应该是模型的输入（层，blob）的名称。
 
-6. **执行前向传播并获取输出**:
+6. **执行模型推理并获取输出**:
    - `ncnn::Mat out;`: 定义一个`ncnn::Mat`类对象，它用来存储模型推理的输出结果。
    - `ex.extract("prob", out);`：由特征提取器执行模型推理，然后将名为"prob"的层（层，blob）的输出保存到前面定义的out中，即输入图像为对应分类的概率。
       ```python
@@ -178,20 +175,19 @@ graph LR
       ```
 
 7. **处理输出**:
-   - `cls_scores.resize(out.w);`: 调整向量`cls_scores`的大小以匹配输出结果（即类别数）。
-   - 遍历输出（对应分类的概率），并将其复制到向量`cls_scores`中。
+   - `cls_scores.resize(out.w);`: 调整向量`cls_scores`的大小，并遍历输出（对应分类的概率，Mat类型），并将其中的数据复制到向量`cls_scores`中。
 
-8. **返回**:
-   - 函数返回0，表示成功执行图像分类。
+8. **返回值**:
+   - 函数固定返回0，以表示成功地执行了图像分类。
 
-总结：该函数的代码展示了如何使用ncnn库和SqueezeNet模型对输入的BGR图像进行分类处理。包括了模型的加载、图像的预处理、模型推理、输出后处理，并最终输出结果的系列步骤。
+总结：函数代码展示了如何使用ncnn库和SqueezeNet模型对输入的BGR格式的图像进行分类。包括模型的加载、图像的预处理、模型推理、输出的后处理，并最终输出结果的系列步骤。
 
 
 ### 1.4 生成ncnn模型参数和权重
 
 - 模型下载
 
-  考虑到[SqueezeNet v1.1 has 2.4x less computation than v1.0, without sacrificing accuracy](https://github.com/forresti/SqueezeNet/tree/master/SqueezeNet_v1.1)，因此这里选择v1.1版本的模型进行测试验证。
+  考虑到[SqueezeNet v1.1 has 2.4x less computation than v1.0, without sacrificing accuracy](https://github.com/forresti/SqueezeNet/tree/master/SqueezeNet_v1.1)，这里选择了v1.1版本的模型进行测试验证。
 
   - caffe格式模型：[deploy.prototxt + squeezenet_v1.1.caffemodel](https://github.com/forresti/SqueezeNet)
     ```shell
@@ -202,7 +198,7 @@ graph LR
   
   - onnx格式模型：[squeezenet1.1-7.onnx](https://github.com/onnx/models/tree/main/validated/vision/classification/squeezenet)
     
-    或者在浏览器中打开[链接](https://github.com/onnx/models/blob/main/validated/vision/classification/squeezenet/model/squeezenet1.1-7.onnx)手动下载，或者使用wget命令下载：
+    或者在浏览器中打开[链接](https://github.com/onnx/models/blob/main/validated/vision/classification/squeezenet/model/squeezenet1.1-7.onnx)手动下载，或者使用wget命令手动下载：
     ```shell
     export http_proxy="http://127.0.0.1:44291"
     export https_proxy="http://127.0.0.1:44291"
@@ -211,8 +207,9 @@ graph LR
     wget https://github.com/onnx/models/raw/refs/heads/main/validated/vision/classification/squeezenet/model/squeezenet1.1-7.onnx
     cd ../ncnn
     ```
-  
+
 - 模型转换
+
   - 转换caffe模型
     ```shell
     cd ../SqueezeNet/SqueezeNet_v1.1
@@ -231,7 +228,7 @@ graph LR
 
   - 验证生成的模型
   
-    修改examples/squeezenet.cpp中的模型文件名，重新编译并运行：
+    修改examples/squeezenet.cpp中模型参数和模型权重的文件名，然后重新编译并运行：
     ```shell
     git diff
       diff --git a/examples/squeezenet.cpp b/examples/squeezenet.cpp
@@ -259,8 +256,7 @@ graph LR
       716 = 0.080389
     cd ..
     ```
-    显然，这里打印输出的结果与1.2章节中打印输出的结果：分类及其顺序是一样的，只是分类相应的概率有所差别，因此可以说命令caffe2ncnn成功地将caffe模型转换成了ncnn模型。
-
+    显然，这里打印输出的结果与1.2章节中打印输出的结果：分类以及先后顺序都是一样的，只是分类相应的概率有所差别，因此可以说命令caffe2ncnn成功地将caffe模型转换成了ncnn模型。
 
   - 转换onnx模型
     ```shell
@@ -295,7 +291,7 @@ graph LR
 
   - 验证生成的模型
   
-    注意：前面下载的onnx模型的输入shape为1x3x224x224，这与和caffe模型的1x3x227x227不一致,因此需要修改examples/squeezenet.cpp中的相关代码。此外还需要修改其中的模型文件名，并重新编译并运行：
+    注意：前面下载的onnx模型的输入shape为1x3x224x224，这与ncnn自带的caffe模型的1x3x227x227不一致，因此需要修改examples/squeezenet.cpp中前处理相关的代码。此外还需要修改模型参数和模型权重的文件名，然后重新编译并运行：
     ```shell
     git diff
       diff --git a/examples/squeezenet.cpp b/examples/squeezenet.cpp
@@ -314,10 +310,12 @@ graph LR
               exit(-1);
       
       -    ncnn::Mat in = ncnn::Mat::from_pixels_resize(bgr.data, ncnn::Mat::PIXEL_BGR, bgr.cols, bgr.rows, 227, 227);
-      +    ncnn::Mat in = ncnn::Mat::from_pixels_resize(bgr.data, ncnn::Mat::PIXEL_BGR, bgr.cols, bgr.rows, 224, 224);    
+      +    ncnn::Mat in = ncnn::Mat::from_pixels_resize(bgr.data, ncnn::Mat::PIXEL_BGR, bgr.cols, bgr.rows, 224, 224);
+      
     cd build
     make
     cd ..
+
     cd example
     ../build/examples/squeezenet ../images/256-ncnn.png
       find_blob_index_by_name prob failed
@@ -326,7 +324,7 @@ graph LR
       Segmentation fault (core dumped)
     cd ..
     ```
-    使用netron查看squeezenet1.1-7.onnx模型，发现输出的名字是`squeezenet0_flatten0_reshape0`而不是`prob`，而且从模型转换时生成的模型参数文件也可以看出（—最后一行）。因此按照上述提示修改代码，并重新编译并运行：
+    使用netron查看squeezenet1.1-7.onnx模型，发现其输出的名字是`squeezenet0_flatten0_reshape0`而不是`prob`，而且从模型转换生成的模型参数文件也可以看出（最后一行）。因此按照上述提示修改代码，然后重新编译并运行：
     ```shell
     git diff examples/squeezenet.cpp
       diff --git a/examples/squeezenet.cpp b/examples/squeezenet.cpp
@@ -355,9 +353,11 @@ graph LR
           ncnn::Mat out;
       -    ex.extract("prob", out);
       +    ex.extract("squeezenet0_flatten0_reshape0", out);
+
     cd build
     make
     cd ..
+
     cd examples
     ../build/examples/squeezenet ../images/256-ncnn.png
       599 = 316.265503
@@ -365,12 +365,11 @@ graph LR
       918 = 285.244476
     cd ..
     ```
-    显然，这里打印输出的结果与1.2章节中打印输出的结果差异较大：分类只有一个一样，且输出的并不是概率。使用netron对比caffe模型和onnx模型发现最后一个处理节点不一样：caffe模型为SoftMax，而onnx模型为Reshape。因此这里输出的第二列数值应该为分值而不是概率。至于为什么top3的分类不一样，初步怀疑是模型的训练细节不一致，下面我们先验证onnx模型。
-
+    显然，这里打印输出的结果与1.2章节中打印输出的结果差异较大：分类只有一个一样，且输出的并不是各类别的概率。使用netron对比caffe模型和onnx模型发现：模型的最后一个处理节点不一样，caffe模型的最后一个节点为SoftMax，而onnx模型的最后一个节点为Reshape。因此这里输出的第二列数值应该为各类别的分值而不是概率。至于为什么top3的分类不一样，初步怀疑是模型训练细节不一致导致的，而不是模型转换导致的。下面我们先验证onnx模型。
 
   - 验证onnx模型
-    
-    阅读[官方文档](https://github.com/onnx/models/blob/main/validated/vision/classification/squeezenet/README.md),先使用其中提到的网页版SqueezeNet 1.0对图片256-ncnn.png进行分类，结果如下图所示：
+
+    阅读[官方文档](https://github.com/onnx/models/blob/main/validated/vision/classification/squeezenet/README.md)，先使用其中提到的网页版SqueezeNet 1.0对图片256-ncnn.png进行分类，结果如下图所示：
     ![alt text](squeezenet-webapp.png)
     然后参考[imagenet_preprocess.py](https://github.com/onnx/models/blob/main/validated/vision/classification/imagenet_preprocess.py)中的预处理，编写python程序（exmples/squeezenet.py）对图片256-ncnn.png进行分类：
     ```python
@@ -429,7 +428,7 @@ graph LR
         for i, label, prob in results:
             print(f"{i}. {label:30}: {prob:.2f}%")
     ```
-    运行该python程序，输出结果如下：
+    激活python环境并运行该python程序，输出结果如下所示：
     ```shell
     conda activate py3.8-dl
     cd examples
@@ -442,7 +441,7 @@ graph LR
       619. lampshade, lamp shade         : 3.03%
     cd ..
     ```
-    显然，这里打印输出的结果和网页上分类的结果比较接近，之所以有些差别，是与模型的版本有关。同时也可以看出python脚本中的预处理与squeezenet.cpp中图像的预处理不完全一样，对其进行修改，并重新编译并运行：
+    显然，这里打印输出的结果和网页上分类的结果比较接近，之所以有些差别，猜测是与模型的版本有关。同时也可以看出python脚本中的预处理与examples/squeezenet.cpp中的预处理不完全一样，对其进行修改，然后重新编译并运行：
     ```shell
     git diff
       diff --git a/examples/squeezenet.cpp b/examples/squeezenet.cpp
@@ -476,9 +475,11 @@ graph LR
           ncnn::Mat out;
       -    ex.extract("prob", out);
       +    ex.extract("squeezenet0_flatten0_reshape0", out);
+
     cd build
     make
     cd ..
+
     cd examples
     ../build/examples/squeezenet ../images/256-ncnn.png
       918 = 18125.111328
@@ -486,46 +487,48 @@ graph LR
       646 = 15991.737305
     cd ..
     ```
-    显然和python程序打印输出的结果只是比较接近，而不完全一致的。
-    |图片|c/c++程序|python程序|备注|
+    显然和python程序打印输出的结果只是比较接近，并不完全一致的，具体原因待查。
+    |图片|c/c++程序<br>的打印输出|python程序<br>的打印输出|备注|
     |---|---|---|---|
-    |<img src="256-ncnn.png" width="128" height="128"/>|918<br>599<br>646|532<br>918<br>599<br>646<br>619|
-    |<img src="hummingbird.png" width="128" height="128"/>|94<br>92<br>16|94<br>92<br>95<br>12<br>14|
-    |<img src="sailboat.png" width="128" height="128"/>|780<br>914<br>484|914<br>780<br>484<br>871<br>724|
-    |<img src="mushroom.png" width="128" height="128"/>|947<br>985<br>340|947<br>992<br>985<br>996<br>840|
+    |<img src="256-ncnn.png" width="128" height="128"/>|918<br>599<br>646|532<br>918<br>599<br>646<br>619|除去第一个，后续一致|
+    |<img src="hummingbird.png" width="128" height="128"/>|94<br>92<br>16|94<br>92<br>95<br>12<br>14|top2一致|
+    |<img src="sailboat.png" width="128" height="128"/>|780<br>914<br>484|914<br>780<br>484<br>871<br>724|top3一致，但顺序不一致|
+    |<img src="mushroom.png" width="128" height="128"/>|947<br>985<br>340|947<br>992<br>985<br>996<br>840|top1一致|
 
 
 ## 二、深入ncnn
 ncnn是基于C++的轻量级神经网络框架，主要用于嵌入式设备上的高性能推理。它支持多种模型格式，包括ONNX、TensorFlow Lite等，并提供了丰富的算子支持和优化技术，以实现高效的计算和低延迟的推断。接下来的学习思路是从几个典型算子切入，研究算子的具体实现、性能优化和跨平台实现，然后逐步上升到图等，直到完成ncnn软件架构的梳理。
 
-[ncnn的设计理念和软件工程](https://news.qq.com/rain/a/20210201A09MJV00)<br>
+[优Tech分享：ncnn的设计理念和软件工程](https://news.qq.com/rain/a/20210201A09MJV00)<br>
 [ncnn：int8量化推理大幅优化超500％](https://news.qq.com/rain/a/20210511A0BDI100)<br>
 [开源推理框架TNN模型部署加速与优化](https://news.qq.com/rain/a/20210917A0BVQP00)
 
+
 ### 2.1 算子基类
-ncnn实现了近百个算子，详细清单参见官方文档[《operators》](https://github.com/Tencent/ncnn/blob/master/docs/developer-guide/operators.md)。ncnn中，几乎所有的算子都是基类Layer的派生类，为此在研究某个算子的实现之前，需要先了解基类Layer的定义。
+ncnn实现了近百个算子，详细清单参见官方文档[《operators》](https://github.com/Tencent/ncnn/blob/master/docs/developer-guide/operators.md)。ncnn中，几乎所有的算子都是基类Layer的派生类，因此在研究某个具体的算子实现之前，需要先了解一下基类Layer的定义。
 
 实现源码：[layer.h](https://github.com/Tencent/ncnn/blob/master/src/layer.h)、[layer.cpp](https://github.com/Tencent/ncnn/blob/master/src/layer.h)
 ```mermaid
 classDiagram
 class Layer {
   <<abstract>>
-  + bool one_blob_only;
-  + bool support_inplace;
-  + bool support_vulkan;
-  + bool support_packing;
-  + bool support_bf16_storage;
-  + bool support_fp16_storage;
-  + bool support_int8_storage;
-  + bool support_image_storage;
-  + bool support_tensor_storage;
-  + void* userdata;
-  + int typeindex;
-  + std::vector<int> bottoms;
-  + std::vector<int> tops;
-  + std::vector<Mat> bottom_shapes;
-  + std::vector<Mat> top_shapes;
-  
+  + bool one_blob_only
+  + bool support_inplace
+  + bool support_vulkan
+  + bool support_packing
+  + bool support_bf16_storage
+  + bool support_fp16_storage
+  + bool support_int8_storage
+  + bool support_image_storage
+  + bool support_tensor_storage
+  + void* userdata
+  + int typeindex
+  + std::string type
+  + std::string name
+  + std::vector<int> bottoms
+  + std::vector<int> tops
+  + std::vector<Mat> bottom_shapes
+  + std::vector<Mat> top_shapes
   + virtual int load_param(const ParamDict& pd)
   + virtual int load_model(const ModelBin& mb)
   + virtual int create_pipeline(const Option& opt)
@@ -537,11 +540,11 @@ class Layer {
 }
 ```
 |成员|说明|备注|
-|----|---|----|
-|one_blob_only    | 输入和输出是否都是单个Mat对象。
-|support_inplace  | 是否支持原地计算，即输入输出共用一个Mat。
-|support_vulkan   | 是否支持Vulkan，即是否支持Vulkan加速。
-|support_packing  | 
+|---|---|---|
+|one_blob_only    | | 模型的输入和输出是否都是单个Mat对象？
+|support_inplace  | | 模型是否支持原地计算，即输入输出共用一个Mat？
+|support_vulkan   | | 模型是否支持Vulkan，即是否支持Vulkan加速？
+|......|......|......|
 |load_param       | 加载算子参数 | 非必须实现
 |load_model       | 加载算子权重 | 非必须实现
 |create_pipeline  | 创建计算管道 | 非必须实现，多用于复杂的算子
@@ -551,8 +554,9 @@ class Layer {
 |forward_inplace  | 执行原地计算 | 对于one_blob_only=false && support_inplace=true 的算子，必须重载实现
 |forward_inplace  | 执行原地计算 | 对于one_blob_only=true  && support_inplace=true 的算子，必须重载实现
 
+
 #### 2.1.1 注册算子
-对于已经实现的每一个算子，都需要借助宏DEFINE_LAYER_CREATOR来为其定义一个创建函数，并将其注册到全局的注册表中。
+每实现一个算子，都需要借助宏DEFINE_LAYER_CREATOR来为其定义一个该算子实例的创建函数，宏DEFINE_LAYER_CREATOR的定义如下所示：
 ```c++
 #define DEFINE_LAYER_CREATOR(name)                          \
     ::ncnn::Layer* name##_layer_creator(void* /*userdata*/) \
@@ -560,33 +564,35 @@ class Layer {
         return new name;                                    \
     }
 ```
-宏DEFINE_LAYER_CREATOR的参数name为算子的类名，例如ReLU算子的类名为ReLU。创建函数集中在文件ncnn/build/src/layer_declaration.h中定义，该文件是在编译时自动生成的。每一个算子都有一个对应的宏调用，譬如ReLU算子：
+宏DEFINE_LAYER_CREATOR的参数name为算子的类名，例如ReLU算子的类名为ReLU。算子的创建函数集中在文件ncnn/build/src/layer_declaration.h中定义，该文件是在编译时自动生成的。每一个算子都对应一个该宏的调用，譬如ReLU算子：
 ```c++
 ...
 #include "layer/relu.h"
 namespace ncnn { DEFINE_LAYER_CREATOR(ReLU) }
 ...
 ```
-算子在文件ncnn/build/src/layer_registry.h中注册，该文件包括11个算子注册表，它们是在编译时自动生成的。每一个算子都在对应的注册表中有一个对应的注册项，譬如ReLU算子：
+算子是集中在文件ncnn/build/src/layer_registry.h中注册，该文件包括11个算子注册表，它们是在编译时自动生成的。每一个算子都在对应的注册表中有一个对应的注册项，譬如ReLU算子：
 ```c++
 static const layer_registry_entry layer_registry[] = {
 ...
 #if NCNN_STRING
-{"PReLU", PReLU_layer_creator},
+{"ReLU", ReLU_layer_creator},
 #else
-{PReLU_layer_creator},
+{ReLU_layer_creator},
 #endif
 ...
 ```
-ncnn还为每一个算子分配了一个唯一的索引，索引集中在文件ncnn/build/src/layer_type_enum.h中定义，该文件是在编译时自动生成的。譬如ReLU算子的索引为26：
+此外，ncnn还为每一个算子分配了一个唯一的索引，算子的索引集中在文件ncnn/build/src/layer_type_enum.h中定义，该文件也是在编译时自动生成的。譬如ReLU算子的索引为26：
 ```c++
 ...
 ReLU = 26,
 ...
 ```
+layer_declaration.h、layer_registry.h、layer_type_enum.h文件是怎么生成的呢？文件[ncnn_add_layer.cmake](https://github.com/Tencent/ncnn/blob/master/cmake/ncnn_add_layer.cmake)中定义的cmake宏ncnn_add_layer是关键，该cmake宏会为指定的算子定义变量：layer_declaration、layer_registry、layer_registry_arch、layer_registry_vulkan、layer_type_enum，从而和模板文件layer_declaration.h.in、layer_registry.h.in、layer_type_enum.h.in匹配生成对应的.h文件。
+
 
 #### 2.1.2 创建算子
-算子的创建由下面的一组函数负责，既可以通过算子的名字（下面名为type的参数）来创建指定的算子，也可以通过算子的索引来创建指定的算子：
+算子的创建由下面的一组函数负责，既可以通过算子的名字（下面函数中名为type的参数）来创建指定的算子，也可以通过算子的索引（下面函数中名为index的参数）来创建指定的算子：
 ```c++
 #if NCNN_STRING
 NCNN_EXPORT Layer* create_layer(const char* type);
@@ -603,7 +609,7 @@ NCNN_EXPORT Layer* create_layer_cpu(int index);
 NCNN_EXPORT Layer* create_layer_vulkan(int index);
 #endif // NCNN_VULKAN
 ```
-它们之间的调用关系如下所示:
+它们之间的调用关系以及其与算子注册表之间的如下所示:
 ```mermaid
 graph TD
   subgraph o
@@ -647,7 +653,7 @@ graph TD
     B3 --> E5
   end
 ```
-譬如创建ReLU算子：
+譬如创建ReLU算子的方法如下所示，其中前者为常用的方法：
 ```c++
 Layer* relu = create_layer("ReLU");
 或
@@ -656,11 +662,11 @@ Layer* relu = create_layer(ReLU);
 
 
 ### 2.2 典型算子
+典型的算子有Input、Convolution、Pooling、ReLU、Sigmoid、Softmax等。
+
 
 #### 2.2.1 ReLU
-ReLU（Rectified Linear Unit，修正线性单元）是深度学习中最常用的激活函数之一，其数学表达式为：<br>
-f(x) = max(0, x)<br>
-即当输入值大于0时输出原值，否则输出0。函数图像为：<br>
+ReLU（Rectified Linear Unit，修正线性单元）是深度学习中最常用的激活函数之一，其数学表达式为：f(x) = max(0, x)，即当输入值大于0时输出原值，否则输出0。其函数图像如下所示：<br>
 ![alt text](relu.png)
 
 实现源码：[relu.h](https://github.com/Tencent/ncnn/blob/master/src/layer/relu.h)、[relu.cpp](https://github.com/Tencent/ncnn/blob/master/src/layer/relu.cpp)
@@ -688,7 +694,7 @@ ReLU_x86，顾名思义，该类是ReLU算子针对x86平台的优化实现，�
 - [_mm512_loadu_ps](https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm512_loadu_ps&ig_expand=5868,4103)：从指定地址的内存中加载16个单精度浮点数构建一个512位的向量。其中的u（unaligned）表示支持未对齐的内存地址。该操作对应汇编指令vmovups；
 - [_mm512_max_ps](https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm512_max_ps&ig_expand=5868,4103,5868,4103,4363)：对两个512位的向量进行逐元素比较，返回每个位置的较大者。该操作对应汇编指令vmaxps；
 - [_mm512_storeu_ps](https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html#text=_mm512_storeu_ps&ig_expand=5868,4103,5868,4103,4363,6545)：将一个512位的向量保存到指定地址的内存中。其中的u（unaligned）表示支持未对齐的内存地址。该操作对应汇编指令vmovups；
-- 其它指令类似，只是位数不一样，就不在此一一赘述了；
+- 其它指令类似，只是并行处理的位数不一样，就不在此一一赘述了；
 
 
 #### 2.2.2 ReLU_arm
@@ -709,9 +715,11 @@ ReLU_arm，顾名思义，该类是ReLU算子针对arm平台的优化实现，�
 
 
 #### 2.2.3 ReLU_vulkan
+待补充。
+
 
 ### 2.3 模型参数
-ncnn模型参数文件的格式详见官方文档：[param and model file structure](https://github.com/Tencent/ncnn/blob/master/docs/developer-guide/param-and-model-file-structure.md)，模型参数的加载由文件[net.h](https://github.com/Tencent/ncnn/blob/master/src/net.h)、[net.cpp](https://github.com/Tencent/ncnn/blob/master/src/net.cpp)中定义的接口实现，它们之间的调用关系如下所示:
+ncnn模型参数文件的格式详见官方文档：[《param and model file structure》](https://github.com/Tencent/ncnn/blob/master/docs/developer-guide/param-and-model-file-structure.md)，模型参数的加载由文件[net.h](https://github.com/Tencent/ncnn/blob/master/src/net.h)、[net.cpp](https://github.com/Tencent/ncnn/blob/master/src/net.cpp)中定义的接口实现，它们之间的调用关系如下所示:
 ```mermaid
 graph LR
   A[int Net::load_param<br>const char* protopath]
@@ -775,9 +783,9 @@ graph LR
   class M2,M3,N1,N4 subnode
   classDef subnode fill:#9C27B0,stroke:#7B1FA2,color:white
 ```
-其中，接口create_overwrite_builtin_layer和create_custom_layer用于创建用户自定义的算子，而用户自定义的算子则由接口Net::register_custom_layer负责注册。注册时，如果算子已经存在于全局注册表layer_registry中，则将该算子注册到专属于本模型的注册表overwrite_builtin_layer_registry中，其优先级最高。如果算子没存在于全局注册表layer_registry中，则将该算子注册到专属于本模型的注册表custom_layer_registry中，其优先级最低。
+其中，接口create_overwrite_builtin_layer和create_custom_layer用于创建用户自定义的算子，用户自定义的算子由接口Net::register_custom_layer负责注册。注册时，如果算子已经存在于全局注册表layer_registry中，则将该算子注册到专属于本模型的注册表overwrite_builtin_layer_registry中，其优先级最高。如果算子没存在于全局注册表layer_registry中，则将该算子注册到专属于本模型的注册表custom_layer_registry中，其优先级最低。
 
-另外提一点，int Net::load_param(const char* protopath)接口加载的参数文件A与int Net::load_param_bin(const char* protopath)接口加载的参数文件B之间是什么关系？还有int Net::load_param(const unsigned char* _mem)接口加载的_mem数据与它们之间又是什么关系呢？文件A和_mem是文件B经过命令ncnn2mem转换而得；
+另外，接口int Net::load_param(const char* protopath)加载的参数文件A与接口int Net::load_param_bin(const char* protopath)加载的参数文件B之间是什么关系呢？还有int Net::load_param(const unsigned char* _mem)接口加载的内存数据C又与它们之间又是什么关系呢？结论：文件A和内存数据C是文件B经过命令ncnn2mem转换/生成出来的：
 ```shell
 ls -l
   total 4840
@@ -793,7 +801,7 @@ ls -l
   -rw-rw-r-- 1 qy qy 25038960 3月   4 23:22 squeezenet_v1.1.param.mem.h
 ```
 
-下面是接口int Net::load_param(const DataReader& dr)解析模型参数的详细流程：
+下面是接口int Net::load_param(const DataReader& dr)解析模型参数文件的详细流程：
 ```mermaid
 graph LR
   A[开始]
@@ -802,12 +810,12 @@ graph LR
   D[读取<br>算子<br>类型<br>和名<br>字]
   E[读取<br>算子<br>输入<br>数和<br>输出<br>数]
   F[创建<br>算子<br>实例]
-  G@{ shape: circle, label: "配置<br>算子" }
+  G@{shape: circle, label: "配置<br>算子"}
   H[结束]
 
-  I0{magic<br>码为<br>7767<br>517？}
-  I1{算子<br>数和<br>blob<br>数大<br>于0？}
-  I2{最后<br>一个<br>算子?}
+  I0@{shape: hex, label: "magic<br>码为<br>7767<br>517？"}
+  I1@{shape: hex, label: "算子<br>数和<br>blob<br>数大<br>于0？"}
+  I2@{shape: hex, label: "最后<br>一个<br>算子?"}
   
   HUB0(( ))
   HUB1(( ))
@@ -832,30 +840,52 @@ graph LR
   style G fill:#FF0000,stroke:#7B1FA2,color:white
   style H fill:#9C27B0,stroke:#7B1FA2,color:white
 ```
-上图可以看出，解析出模型中的算子数和blob数后，立即resize模型类的两个std::vector类型的成员变量layers（算子列表）和blobs（blob列表），随后便进入for循环来初始化算子列表和blob列表。初始化的核心工作是创建算子、配置算子（设置算子的type和name、输入blob的索引列表、输出blob的索引列表，解析算子的参数，设置算子的输入的shape hints、输出的shape hints，最后加载算子参数）和配置blob（设置blob的name、producer和consumer，设置算子的输入blob的shape hints）。
+从上图可以看出，解析出模型中的算子数和blob数后，先resize Net类的两个std::vector类型的成员变量layers（算子列表）和blobs（blob列表），然后进入for循环来初始化算子列表和blob列表。初始化的核心工作是创建算子、配置算子（设置算子的type和name、输入blob的索引列表、输出blob的索引列表，解析算子的参数，设置算子的输入和输出的shape hints，最后加载算子参数等）和配置blob（设置blob的name、producer和consumer，设置算子的输入blob的shape hints等）。
 ```mermaid
 graph LR
   A[Input]
   X1@{ shape: cyl, label: "blob1" }
-  B[算子1]
+  B[算子<br>1]
   X2@{ shape: cyl, label: "blob2" }
-  C[算子2]
-  X3@{ shape: cyl, label: "blob3" }
-  D[...]
+  C1[算子<br>21]
+  C2[算子<br>22]
+  X31@{ shape: cyl, label: "blob<br>31" }
+  X32@{ shape: cyl, label: "blob<br>32" }
+  D1[...]
+  D2[...]
+  X41@{ shape: cyl, label: "blob<br>41" }
+  X42@{ shape: cyl, label: "blob<br>42" }
+  E[算子n]
+  Xn@{ shape: cyl, label: "blobn" }
 
   A   --> |produce|X1
   X1  --> |consume|B
   B   --> |produce|X2
-  X2  --> |consume|C
-  C   --> |produce|X3
-  X3 -.-> |consume|D
+  X2  --> |consume|C1
+  C1  --> |produce|X31
+  X31-.-> |consume|D1
+  D1 -.-> |produce|X41
+  X2  --> |consume|C2
+  C2  --> |produce|X32
+  X32-.-> |consume|D2
+  D2 -.-> |produce|X42
+  X41 --> |consume|E
+  X42 --> |consume|E
+  E   --> |produce|Xn
 ```
 
+
 ### 2.4 模型权重
-ncnn模型权重文件的格式详见官方文档：[param and model file structure](https://github.com/Tencent/ncnn/blob/master/docs/developer-guide/param-and-model-file-structure.md)，模型权重的加载由文件[net.h](https://github.com/Tencent/ncnn/blob/master/src/net.h)、[net.cpp](https://github.com/Tencent/ncnn/blob/master/src/net.cpp)中定义的接口实现，它们之间的调用关系如下所示:
+ncnn模型权重文件的格式详见官方文档：[《param and model file structure》](https://github.com/Tencent/ncnn/blob/master/docs/developer-guide/param-and-model-file-structure.md)，模型权重的加载由文件[net.h](https://github.com/Tencent/ncnn/blob/master/src/net.h)、[net.cpp](https://github.com/Tencent/ncnn/blob/master/src/net.cpp)中定义的接口实现，它们之间的调用关系如下图所示:
 
 ```mermaid
 graph LR
+  F0@{ shape: doc, label: "*.param"}
+  F1@{ shape: doc, label: "*.bin"}
+  F2@{ shape: doc, label: "*.param.mem.h"}
+  T@{ shape: subproc, label: "ncnn2mem" }
+  F0 & F1 --> T --> F2
+
   A1[int Net::load_model<br>const char* modelpath]
   A2[int Net::load_model<br>const unsigned char* _mem]
   B1[int Net::load_model<br>FILE* fp]
@@ -864,27 +894,33 @@ graph LR
   M1[int Layer::load_model<br>const ModelBin& mb]
   M4[int Layer::create_pipeline<br>const Option& opt]
 
+  F0 --> A1
+  F2 --> A2
   A1 --> B1
-  B1 --Data<br>Reader<br>From<br>Stdio --> C
-  A2 --Data<br>Reader<br>From<br>Memory--> C
-  C ~~~ HUB0(( ))
-  HUB0 --> M1
-  HUB0 --> M4
+  HUB0(( ))
+  B1 ~~~|Data<br>Reader<br>From<br>Stdio |HUB0
+  A2 ~~~|Data<br>Reader<br>From<br>Memory|HUB0
+  HUB0 --> C
+  C ~~~ HUB1(( ))
+  HUB1 --> M1
+  HUB1 --> M4
   
   style A1 fill:#4CAF50,stroke:#388E3C,color:white
   style A2 fill:#4CAF50,stroke:#388E3C,color:white
-  linkStyle 3 stroke:#FF5722,stroke-width:1.5px
+  linkStyle 6,7 stroke:#C0C0C0,stroke-width:1.5px
+  linkStyle 8,9 stroke:#FF5722,stroke-width:1.5px
   class M1,M4 subnode
   classDef subnode fill:#9C27B0,stroke:#7B1FA2,color:white
 ```
+另外，接口int Net::load_model(const char* modelpath)加载的权重文件A与接口int Net::load_model(const unsigned char* _mem)加载的内存数据B之间是什么关系呢？结论：内存数据B是文件A经过命令ncnn2mem转换/生成出来的，详见2.3章节。
 
 
 ### 2.5 模型推理
-从ncnn实现的角度来看，模型推理的本质就是输入数据依次经过模型中每一个算子进行处理的过程，即依次调用每个算子的forward/forward_inplace接口对输入数据进行处理。下图为模型推理的流程以及与此相关的关键数据结构：
+从ncnn的具体实现来看，模型推理的本质就是输入数据依次经过模型参数中所描述的每个算子并按照模型权重中所指定的参数进行运算处理的过程，这个过程会依次调用每个算子的forward/forward_inplace接口对输入数据进行处理。下图为模型推理的流程以及与此相关的关键数据结构：
 ![推理的流程以及关键数据结构](inference.png)
-上图中，类Net是一个通用的神经网络类，其通过接口load_param加载可以加入ncnn模型参数，加载完模型参数后，便构建了两个算子列表：算子列表（layers）以及blob列表(blobs)。此外，前者通过后者构成了一个数据处理pipeline：每个blob都会指向一个producer和/或一个consumer，同时还会指向一个Mat，该Mat是proudcer（上一个算子）的输出，即其生成的数据，同时也是consumer（下一个算子）的输入，即其要处理的数据。类Extractor应该是一个辅助类，它一方面维护了一次推理过程中要用的一组与blob列表一一对应的Mat列表，另一方面提供extract接口用于启动一次数据处理pipeline。
+上图中，类Net是一个通用的神经网络类，其通过接口load_param加载ncnn模型参数，通过接口load_model加载ncnn模型权重。加载完模型参数后，其内部便创建了两个列表：算子列表（layers）以及blob列表(blobs)。算子列表中的算子通过blob列表中blob的信息构建出了一个pipeline：每个blob都会指向一个producer和/或一个consumer，同时还会指向一个Mat，该Mat既是proudcer（上一个算子）的输出，即其生成的数据，同时也是consumer（下一个算子）的输入，即其要处理的数据。我理解类Extractor是一个辅助类，它一方面维护了一次推理过程中要用的一组Mat（它们与blob列表一一对应），另一方面提供了extract接口用于执行一次推理（即启动一次数据处理pipeline）。
 
-经过实测发现，每次推理都需要重新创建一个Extractor类对象，否则如果连续推理，则第二次以及后面的推理都无效，这是因为Extractor中维护的Mat列表的最后一个Mat的dims不等于0，从而导致第二次及后面的推理没有进行：
+经过实测发现，每次推理都需要重新创建一个Extractor类对象并调用其接口extract来完成该次推理，否则在连续推理时，第二次以及其后面的所有推理都会无效，这是因为Extractor类中维护的Mat列表中的最后一个Mat的dims在推理结束后就被设置为非0，并且没有调用release来清理，从而导致第二次以及其后面的推理实际并没有进行，具体细节参见下面代码中的那个if条件判断：
 ```c++
 int Extractor::extract(int blob_index, Mat& feat, int type)
 {
@@ -898,10 +934,10 @@ int Extractor::extract(int blob_index, Mat& feat, int type)
   feat = d->blob_mats[blob_index];
 }
 ```
+这中设计会导致：每次创建一个新的Extractor类对象进行推理时，都需要重新构建一次Mat列表，即每个Mat都需要重新分配一次内存，这会增加额外CPU开销（当然，也可以通过内存池等技术来降低这个开销）。但其在opt.lightmode被设置为true时，会使得基于ncnn的AI应用对内存的需求就会比较小。opt.lightmode被设置为true时，用于两个算子之间交互数据的Mat会在consumer使用完时被释放掉。这种设计比较适合于非实时推理的应用场景。<font color="red"><b>如何修改使其适用于实时应用场景呢？即第一次推理把Mat列表中所有的Mat分配好，后续的推理直接使用Mat列表中Mat!<b></font>
 
 
 ### 2.8 优化技术
-
 
 #### 2.3.1 OpenMP
 OpenMP(Open Multi-Processing)
