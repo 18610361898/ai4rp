@@ -934,13 +934,110 @@ int Extractor::extract(int blob_index, Mat& feat, int type)
   feat = d->blob_mats[blob_index];
 }
 ```
-这中设计会导致：每次创建一个新的Extractor类对象进行推理时，都需要重新构建一次Mat列表，即每个Mat都需要重新分配一次内存，这会增加额外CPU开销（当然，也可以通过内存池等技术来降低这个开销）。但其在opt.lightmode被设置为true时，会使得基于ncnn的AI应用对内存的需求就会比较小。opt.lightmode被设置为true时，用于两个算子之间交互数据的Mat会在consumer使用完时被释放掉。这种设计比较适合于非实时推理的应用场景。<font color="red"><b>如何修改使其适用于实时应用场景呢？即第一次推理把Mat列表中所有的Mat分配好，后续的推理直接使用Mat列表中Mat!<b></font>
+这中设计会导致：每次创建一个新的Extractor类对象进行推理时，都需要重新构建一次Mat列表，即每个Mat都需要重新分配一次内存，这会增加额外CPU开销（当然，也可以通过内存池等技术来降低这个开销）。但其在opt.lightmode被设置为true时，会使得基于ncnn的AI应用对内存的需求就会比较小。opt.lightmode被设置为true时，用于两个算子之间交互数据的Mat会在consumer使用完时被释放掉。这种设计比较适合于非实时推理的应用场景。<font color="red"><b>如何修改使其适用于实时应用场景呢？即第一次推理把Mat列表中所有的Mat分配好，后续的推理直接使用Mat列表中Mat!</b></font>
 
 
 ### 2.8 优化技术
 
-#### 2.3.1 OpenMP
-OpenMP(Open Multi-Processing)
+#### 2.8.1 OpenMP
+OpenMP(Open Multi-Processing)是由OpenMP Architecture Review Board牵头提出的，并已被广泛接受，用于共享内存并行系统的多处理器程序设计的一套指导性编译处理方案(Compiler Directive) [1]。OpenMP支持的编程语言包括C、C++和Fortran；而支持OpenMp的编译器包括Sun Compiler，GNU Compiler和Intel Compiler等。OpenMp提供了对并行算法的高层的抽象描述，程序员通过在源代码中加入专用的pragma来指明自己的意图，由此编译器可以自动将程序进行并行化，并在必要之处加入同步互斥以及通信。当选择忽略这些pragma，或者编译器不支持OpenMp时，程序又可退化为通常的程序(一般为串行)，代码仍然可以正常运作，只是不能利用多线程来加速程序执行。
+
+参考资料：<br>
+[《OpenMP并行编程（一）》](./openmp/OpenMP并行编程（一）.pdf)<br>
+[《OpenMP并行编程（二）》](./openmp/OpenMP并行编程（二）.pdf)<br>
+[《OpenMP并行编程（三）》](./openmp/OpenMP并行编程（三）.pdf)<br>
+[《An Overview of OpenMP》](./openmp/An%20Overview%20of%20OpenMP.pdf)<br>
+
+下面是ncnn源码中使用到的omp指令，通过它们获得更好的性能：
+- #pragma omp parallel sections
+- #pragma omp section
+
+  非迭代任务并行，即将后面的代码块划分为多个独立section，每个线程执行一个section。譬如下面的代码，会启动两个线程，其中给一个线程执行代码块1，另一个线程执行代码块2：
+  ```c++
+  #pragma omp parallel sections
+  {
+      #pragma omp section
+      {
+          代码块1
+      }
+      #pragma omp section
+      {
+          代码块2
+      }
+  }
+  ```
+
+- #pragma omp parallel for num_threads(N)
+- #pragma omp parallel for
+
+  迭代任务并行，即将后面的循环拆分成N个子任务，每个子任务启动一个线程执行。譬如下面的代码，会启动4个线程，并将后面的for循环拆分成4个子任务：0~[n/4]、[n/4]+1~[n/4]*2、[n/4]*2+1~[n/4]*3、[n/4]*3+1~n，分别由其中的一个线程来执行：
+  ```c++
+  #pragma omp parallel for num_threads(4)
+  for(int i = 0; i < n; i++) {
+    循环内核
+  }
+  ```
+  如果没有通过num_threads()来显示地指定要启动的线程数，则默认线程数由环境变量OMP_NUM_THREADS来决定要启动的线程数。如果未设置该环境变量，通常情况下则由CPU内核的数量来决定要启动的线程数据。可以使用接口omp_get_num_procs()获取CPU内核的数量。
+
+- #pragma omp parallel for collapse(M) 
+
+  将M层嵌套循环合并为一层，形成一个更大的“逻辑循环”，从而增加并行化的粒度。譬如下面的代码，两层循环会先合并成一层，使得总迭代次数达到2*100=200，然后多个线程可以自由地分配这200次循环：
+  ```c++
+  #pragma omp parallel for collapse(2) 
+  for (int i = 0; i < 2; i++) {
+    for (int j = 0; j < 100; j++) {
+      循环内核
+    }
+  }
+  ```
+  如果没有使用collapse指令，则迭代次数为2，最多两个线程来分配这两次迭代，对于CPU内核数高于2的环境，显然没有充分挖掘CPU的性能。
+
+- #pragma omp parallel for schedule(static, M)
+
+  采取静态调度策略，将循环迭代按块（chunk_size=M）分配给线程，即迭代0~M-1分配给线程0、迭代M~M*2-1分配给线程1、迭代M*2~M*3-1分配给线程2、迭代M*3~M*4-1分配给线程3、迭代M*4~M*5-1分配给线程0、……，直到分配完为止。
+  ```c++
+  #pragma omp parallel for num_threads(4) schedule(static, 2)
+  for (int i = 0; i < 100; i++) {
+    循环内核
+  }
+  ```
+  |线程|迭代序号|
+  |----|-------|
+  |线程0|0、1、 8、 9、16、17、24、25、32、33、40、41、……
+  |线程1|2、3、10、11、18、19、26、27、34、35、42、43、……
+  |线程2|4、5、12、13、20、21、28、29、36、37、44、45、……
+  |线程3|6、7、14、15、22、23、30、31、38、39、46、47、……
+
+  除静态调度策略外，还支持动态调度策略（dynamic）——先到先得的动态分配方式，线程执行完当前块后立即请求新块；指导性调度策略（guided）——初始分配较大的迭代块，后续块大小按指数级递减至chunk_size（默认为1）。
+
+- #pragma omp critical
+
+  定义临界区（Critical Section）的指令，其作用是确保同一时间最多只有一个线程执行该区域内的代码，从而避免多线程并发修改共享资源时可能引发的数据竞争。保护共享变量或资源的访问，确保多线程环境下对共享数据的操作具备 原子性（Atomicity）和 一致性（Consistency）。
+  ```c++
+  int max = -1;
+  #pragma omp parallel for
+  for(int i = 0; i < 100; i++) {
+    循环内核
+    #pragma omp critical
+    {
+      操作变量max
+    }
+  }
+  ```
+  上述代码中，多个线程中某一时刻只有一个线程能够操作变量max，确保结果的正确性。
+
+- #pragma omp barrier
+
+  线程同步指令，其核心功能是强制所有线程在某个执行点相互等待，直到所有线程都到达该同步点后，才继续后续的操作。譬如下面的代码，所有线程在执行完代码块1后开始等待其它线程执行完代码块1，当所有线程都执行完代码块1后，才开始执行代码块2：
+  ```c++
+  #pragma omp parallel 
+  {
+    代码块1
+    #pragma omp barrier
+    代码块2
+  }
+  ```
+
 
 #### 2.3.2 SIMD
 x86平台上，通过扩展SIMD(Single Instruction Multiple Data，单指令多数据)指令集来实现并行计算能力的提升：
