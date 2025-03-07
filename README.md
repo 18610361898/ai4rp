@@ -87,7 +87,7 @@ export PATH=$NCNN_ROOT/build/tools:$NCNN_ROOT/build/tools/caffe:$NCNN_ROOT/build
   cd ..
   ```
   图片../images/256-ncnn.png如下所示，结合下面的1000分类标签，识别出来top1的是"dining table, board"，这与[《how to build》](https://github.com/Tencent/ncnn/blob/master/docs/how-to-build/how-to-build.md)中的[Verification](https://github.com/Tencent/ncnn/blob/master/docs/how-to-build/how-to-build.md#verification)一节给出的结果是一致的。<br>
-  ![256-ncnn.png](256-ncnn.png)<br>
+  ![256-ncnn.png](./images/256-ncnn.png)<br>
 
 - 1000分类的标签
   - nihui上的[synset_words.txt](https://github.com/nihui/ncnn-android-squeezenet/blob/master/app/src/main/assets/synset_words.txt) 
@@ -370,7 +370,7 @@ graph LR
   - 验证onnx模型
 
     阅读[官方文档](https://github.com/onnx/models/blob/main/validated/vision/classification/squeezenet/README.md)，先使用其中提到的网页版SqueezeNet 1.0对图片256-ncnn.png进行分类，结果如下图所示：
-    ![alt text](squeezenet-webapp.png)
+    ![alt text](./images/squeezenet-webapp.png)
     然后参考[imagenet_preprocess.py](https://github.com/onnx/models/blob/main/validated/vision/classification/imagenet_preprocess.py)中的预处理，编写python程序（exmples/squeezenet.py）对图片256-ncnn.png进行分类：
     ```python
     import onnxruntime as ort
@@ -490,10 +490,10 @@ graph LR
     显然和python程序打印输出的结果只是比较接近，并不完全一致的，具体原因待查。
     |图片|c/c++程序<br>的打印输出|python程序<br>的打印输出|备注|
     |---|---|---|---|
-    |<img src="256-ncnn.png" width="128" height="128"/>|918<br>599<br>646|532<br>918<br>599<br>646<br>619|除去第一个，后续一致|
-    |<img src="hummingbird.png" width="128" height="128"/>|94<br>92<br>16|94<br>92<br>95<br>12<br>14|top2一致|
-    |<img src="sailboat.png" width="128" height="128"/>|780<br>914<br>484|914<br>780<br>484<br>871<br>724|top3一致，但顺序不一致|
-    |<img src="mushroom.png" width="128" height="128"/>|947<br>985<br>340|947<br>992<br>985<br>996<br>840|top1一致|
+    |<img src="./images/256-ncnn.png" width="128" height="128"/>|918<br>599<br>646|532<br>918<br>599<br>646<br>619|除去第一个，后续一致|
+    |<img src="./images/hummingbird.png" width="128" height="128"/>|94<br>92<br>16|94<br>92<br>95<br>12<br>14|top2一致|
+    |<img src="./images/sailboat.png" width="128" height="128"/>|780<br>914<br>484|914<br>780<br>484<br>871<br>724|top3一致，但顺序不一致|
+    |<img src="./images/mushroom.png" width="128" height="128"/>|947<br>985<br>340|947<br>992<br>985<br>996<br>840|top1一致|
 
 
 ## 二、深入ncnn
@@ -667,7 +667,7 @@ Layer* relu = create_layer(ReLU);
 
 #### 2.2.1 ReLU
 ReLU（Rectified Linear Unit，修正线性单元）是深度学习中最常用的激活函数之一，其数学表达式为：f(x) = max(0, x)，即当输入值大于0时输出原值，否则输出0。其函数图像如下所示：<br>
-![alt text](relu.png)
+![alt text](./images/relu.png)
 
 实现源码：[relu.h](https://github.com/Tencent/ncnn/blob/master/src/layer/relu.h)、[relu.cpp](https://github.com/Tencent/ncnn/blob/master/src/layer/relu.cpp)
 
@@ -917,7 +917,7 @@ graph LR
 
 ### 2.5 模型推理
 从ncnn的具体实现来看，模型推理的本质就是输入数据依次经过模型参数中所描述的每个算子并按照模型权重中所指定的参数进行运算处理的过程，这个过程会依次调用每个算子的forward/forward_inplace接口对输入数据进行处理。下图为模型推理的流程以及与此相关的关键数据结构：
-![推理的流程以及关键数据结构](inference.png)
+![推理的流程以及关键数据结构](./images/inference.png)
 上图中，类Net是一个通用的神经网络类，其通过接口load_param加载ncnn模型参数，通过接口load_model加载ncnn模型权重。加载完模型参数后，其内部便创建了两个列表：算子列表（layers）以及blob列表(blobs)。算子列表中的算子通过blob列表中blob的信息构建出了一个pipeline：每个blob都会指向一个producer和/或一个consumer，同时还会指向一个Mat，该Mat既是proudcer（上一个算子）的输出，即其生成的数据，同时也是consumer（下一个算子）的输入，即其要处理的数据。我理解类Extractor是一个辅助类，它一方面维护了一次推理过程中要用的一组Mat（它们与blob列表一一对应），另一方面提供了extract接口用于执行一次推理（即启动一次数据处理pipeline）。
 
 经过实测发现，每次推理都需要重新创建一个Extractor类对象并调用其接口extract来完成该次推理，否则在连续推理时，第二次以及其后面的所有推理都会无效，这是因为Extractor类中维护的Mat列表中的最后一个Mat的dims在推理结束后就被设置为非0，并且没有调用release来清理，从而导致第二次以及其后面的推理实际并没有进行，具体细节参见下面代码中的那个if条件判断：
@@ -1352,6 +1352,145 @@ int main(void)
   return 0;
 }
 ```
+schedule(static, 2)指定静态调度的任务分配策略，迭代空间（0~12）按块大小 2 划分，每个块连续分配给线程。总块数为 ceil(13/2)=7，线程按轮询顺序（0→1→2→3→0→1→2）接收块。。schedule(dynamic, 2)指定动态调度的任务分配策略，线程按需动态请求块，块分配顺序不确定，但每个块大小仍为 2（最后一个块可能为 1）。#pragma atomic指令确保了计数器count的访问安全。
+```shell
+./openmp_schedule 
+  **** Static Schedule **** 
+  Loop indexes handled by thread 0 = 4 
+  Loop indexes handled by thread 1 = 4 
+  Loop indexes handled by thread 2 = 3 
+  Loop indexes handled by thread 3 = 2 
+  **** Dynamic Schedule **** 
+  Loop indexes handled by thread 0 = 4 
+  Loop indexes handled by thread 1 = 2 
+  Loop indexes handled by thread 2 = 3 
+  Loop indexes handled by thread 3 = 4 
+```
+静态调度适合负载均衡场景（如均匀计算任务），可尝试不同块大小（如 schedule(static, 3)）。动态调度适合负载不均衡任务，可结合guided调度（块大小逐渐减小）。
+|调度类型|分配方式|适用场景|性能特点|
+|---|---|---|---|
+|static	|固定块轮询分配|负载均衡任务（如均匀循环）|低开销，可预测性高|
+|dynamic|动态按需分配|负载不均衡任务（如递归算法）|灵活性高，调度开销稍大|
+
+- [openmp_single.c](https://github.com/NCI900-Training-Organisation/intro-to-OpenMP/blob/main/src/openmp_single.c)
+```c++
+#include <omp.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <time.h>
+
+int main(void) 
+{
+  int i = 0, N = 8;
+  omp_set_num_threads(N);
+
+  int *a;
+  int *b;
+  int *c;
+
+  #pragma omp parallel
+  {
+    #pragma omp single
+    {
+      a = malloc(N * sizeof(int));
+      b = malloc(N * sizeof(int));
+      c = malloc(N * sizeof(int));
+
+      srand(time(NULL));
+    }
+
+    #pragma omp for
+    for( i  = 0; i < N; i++) {
+      a[i] = rand() % 10;  
+      b[i] = rand() % 10;
+    }
+
+    #pragma omp for
+    for( i  = 0; i < N; i++) {
+        c[i] = a[i] * b[i];
+    }
+
+    #pragma omp for
+    for( i = 0; i < N ; i++) {
+      printf("A[%d] * B[%d] = %d * %d = %d \n", i, a[i], i, a[i], c[i]);
+    }
+  }
+
+  free(a);
+  free(b);
+  free(c);
+
+  return 0;
+}
+```
+#pragma omp single指令让主线程分配a、b、c的内存，其它线程等待分配完成后继续执行（隐式同步），确保a、b、c内存的安全访问。#pragma omp for指令将循环迭代分配给不同的线程，每个线程执行一部分迭代，在循环结束时，所有线程会隐式同步，确保前一个循环的所有迭代完成后，才会开始下一个循环的执行。
+```shell
+./openmp_single 
+  A[2] * B[2] = 6 * 6 = 36 
+  A[4] * B[4] = 4 * 1 = 4 
+  A[0] * B[0] = 5 * 6 = 30 
+  A[5] * B[5] = 1 * 6 = 6 
+  A[7] * B[7] = 9 * 4 = 36 
+  A[3] * B[3] = 3 * 1 = 3 
+  A[1] * B[1] = 5 * 5 = 25 
+  A[6] * B[6] = 0 * 8 = 0 
+```
+
+- [openmp_master.c](https://github.com/NCI900-Training-Organisation/intro-to-OpenMP/blob/main/src/openmp_master.c)
+```c++
+#include <omp.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <time.h>
+
+int main(void) 
+{
+  int i = 0, N = 8;
+  omp_set_num_threads(N);
+
+  int *a;
+  int *b;
+  int *c;
+
+  #pragma omp parallel
+  {
+    #pragma omp master
+    {
+      a = malloc(N * sizeof(int));
+      b = malloc(N * sizeof(int));
+      c = malloc(N * sizeof(int));
+
+      srand(time(NULL));
+    }
+
+    #pragma omp for
+    for( i  = 0; i < N; i++) {
+      a[i] = rand() % 10;  
+      b[i] = rand() % 10;
+    }
+
+    #pragma omp for
+    for( i  = 0; i < N; i++) {
+        c[i] = a[i] * b[i];
+    }
+
+    #pragma omp for
+    for( i = 0; i < N ; i++) {
+      printf("A[%d] * B[%d] = %d \n", i, i, c[i]);
+    }
+  }
+
+  free(a);
+  free(b);
+  free(c);
+  
+  return 0;
+}
+```
+
+
 
 #### 2.8.2 SIMD
 ##### 2.8.2.1 x86平台
