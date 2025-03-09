@@ -17,6 +17,9 @@ ncnn是一个为手机端极致优化的高性能神经网络前向计算框架�
 git clone https://github.com/Tencent/ncnn.git
 cd ncnn
 git submodule update --init
+或者
+git clone --recursive https://github.com/Tencent/ncnn.git
+cd ncnn
 ```
 
 - 安装依赖
@@ -951,6 +954,7 @@ int Extractor::extract(int blob_index, Mat& feat, int type)
 [《OpenMP Examples V6.0》](./openmp/OpenMP%20Examples%20V6.0.pdf)<br>
 [《OpenMP Reference Guide V6.0》](./openmp/OpenMP%20RefGuide%20V6.0.pdf)
 
+
 ##### 2.8.1.1 OpenMP在ncnn中的应用
 ncnn源码中使用到了下面的omp指令，通过它们提升了ncnn框架的推理性能：
 - <b>#pragma omp parallel sections<br>
@@ -1052,9 +1056,9 @@ ncnn源码中使用到了下面的omp指令，通过它们提升了ncnn框架的
 
 
 ##### 2.8.1.2 OpenMP的其它特性
-接下来除了看openmp目录下的PDF文档外，还可以通过理解[《Parallel Programming with OpenMP》](https://github.com/NCI900-Training-Organisation/intro-to-OpenMP)中的源码来学习OpenMP的其它特性。
+接下来除了看openmp目录下的PDF文档来提升对OpenMP的理解外，还可以通过分析和实践[《Parallel Programming with OpenMP》](https://github.com/NCI900-Training-Organisation/intro-to-OpenMP)中的源码来体会OpenMP的特性。
 ```shell
-sudo apt-get install libpapi-dev
+sudo apt-get install libpapi-dev papi-tools
 git clone https://github.com/NCI900-Training-Organisation/intro-to-OpenMP
 cd intro-to-OpenMP
 make
@@ -1125,6 +1129,64 @@ while true; do ps -T -p `ps aux | grep openmp | grep -v grep | awk -F " " '{prin
 ```
 可见串行域的线程（主线程）被并行域复用了！
 
+- [openmp_parallel_for.c](https://github.com/NCI900-Training-Organisation/intro-to-OpenMP/blob/main/src/openmp_parallel_for.c)
+```c++
+#include <omp.h>
+#include <stdio.h>
+
+int main() 
+{
+  int i = 0;
+  omp_set_num_threads(4);
+
+  printf("Total number of threads allocated in the serial section %d \n", omp_get_num_threads() );
+  #pragma omp parallel 
+  {
+    #pragma omp for
+    for(i = 0; i < omp_get_num_threads(); i++) {
+      printf("This is run by thread %d, Total threads in the parallel section %d\n", omp_get_thread_num(), omp_get_num_threads());
+    }
+  }
+  
+  return 0;
+}
+```
+接口omp_set_num_threads()指定了后面并行区域的最大线程数量，#pragma omp for指令后面循环迭代的次数决定了最终会启动几个线程，如果循环迭代的次数小于线程最大数量，那么启动的线程数就等于循环迭代的次数。该程序的运行结果如下所示：
+```shell
+./openmp_parallel_for 
+  Total number of threads allocated in the serial section 1 
+  This is run by thread 0, Total threads in the parallel section 4
+  This is run by thread 3, Total threads in the parallel section 4
+  This is run by thread 1, Total threads in the parallel section 4
+  This is run by thread 2, Total threads in the parallel section 4
+```
+对该程序略作修改(将#pragma omp parallel和#pragma omp for合并为#pragma omp parallel for，以减少线程组创建开销)，修改后的代码如下所示：
+```c++
+#include <omp.h>
+#include <stdio.h>
+
+int main() 
+{
+  int i = 0;
+  omp_set_num_threads(4);
+
+  printf("Total number of threads allocated in the serial section %d \n", omp_get_num_threads() );
+  #pragma omp parallel for
+  for(i = 0; i < 2; i++) {
+    printf("This is run by thread %d, Total threads in the parallel section %d\n", omp_get_thread_num(), omp_get_num_threads());
+  }
+  
+  return 0;
+}
+```
+该程序的运行结果如下所示：
+```shell
+./openmp_parallel_for 
+  Total number of threads allocated in the serial section 1 
+  This is run by thread 1, Total threads in the parallel section 4
+  This is run by thread 0, Total threads in the parallel section 4
+```
+
 - [openmp_reduction.c](https://github.com/NCI900-Training-Organisation/intro-to-OpenMP/blob/main/src/openmp_reduction.c)
 ```c++
 #include <omp.h>
@@ -1150,7 +1212,7 @@ int main(void) {
   return 0;
 }
 ```
-default(none)指令表明所有变量必须显示地指定是私有变量还是共享变量。private(tnumber)显示地指定了变量tnumber为私有变量，且没有初始值。reduction(+:i)：指定了变量i为私有变量，且没有初始化值，并在并行结束后对它执行求和操作。reduction(*:j)、reduction(^:k)类似。该程序的运行结果如下所示：
+default(none)指令表明所有变量必须显示地指定是私有变量还是共享变量。private(tnumber)显示地指定了变量tnumber为私有变量，且没有初始值。reduction(+:i)：隐式地指定了变量i为私有变量，且初始化为0，并在并行结束后对它执行求和操作。reduction(*:j)、reduction(^:k)类似，只是分别初始化为1、0执行就求积、求异或操作。该程序的运行结果如下所示：
 ```shell
 ./openmp_reduction 
   Before parallel region: i=10, j=10, k=10
@@ -1160,13 +1222,24 @@ default(none)指令表明所有变量必须显示地指定是私有变量还是�
   Thread 1: i=1, j=1, k=1
   After parallel region: i=20, j=240, k=14
 ```
-手工计算：i=10+4+2+3+1=20，j=10\*4\*2\*3\*1=240，k=10^4^2^3^1=(1010)^(0100)^(0010)^(0011)^(0001)=(1110)=14，可见上述输出结果是正确的。
+手工计算：i=10+4+2+3+1=20，j=10\*4\*2\*3\*1=240，k=10^4^2^3^1=(1010)^(0100)^(0010)^(0011)^(0001)=(1110)=14，式子中的10为它们的初始值，可见程序输出结果是正确的。
+|运算符|变量初始值|适用数据类型|功能|
+|----|---|---|---|
+| +  | 0 |整数、浮点数|求和|
+| -  | 0 |整数、浮点数|求差|
+| *  | 1 |整数、浮点数|求积|
+| &  |全1位|整数|按位与|
+|\|  | 0 |整数|按位或|
+| ^  | 0 |整数|按位异或|
+|\|\|| 0 |整数|逻辑或|
+| && | 1 |整数|逻辑与|
+| max|最小可能值|整数、浮点数|求最大值|
+| min|最大可能值|整数、浮点数|求最小值|
 
 - [openmp_max_threads.c](https://github.com/NCI900-Training-Organisation/intro-to-OpenMP/blob/main/src/openmp_max_threads.c)
 ```c++
 #include <omp.h>
 #include <stdio.h>
-#include <stdlib.h>
 
 int main(int argc, char* argv[]) {
   int np, t_id, num_threads, max_threads;
@@ -1201,7 +1274,7 @@ int main(int argc, char* argv[]) {
   return 0;
 }
 ```
-接口omp_set_num_threads()用于设置后续并行区域中使用的最大线程数量，只能在串行区域调用。接口omp_get_max_threads()用于获取在不使用num_threads指令时后续并行区域中最大线程数，该值由接口omp_set_num_threads、环境变量OMP_NUM_THREADS共同决定。
+接口omp_set_num_threads()用于设置后续并行区域中最大线程数量，该接口只能在串行区域调用。接口omp_get_max_threads()用于获取在不使用num_threads指令时后续并行区域中最大线程数量，该值由接口omp_set_num_threads()、环境变量OMP_NUM_THREADS、CPU核心数量一起决定（优先级递减）。
 ```shell
 ./openmp_max_threads 8
   Before Parallel: num_threads=1 max_threads 8
@@ -1223,9 +1296,9 @@ int main(int argc, char* argv[]) {
 
 - [openmp_datasharing.c](https://github.com/NCI900-Training-Organisation/intro-to-OpenMP/blob/main/src/openmp_datasharing.c)
 ```c++
-#include <stdio.h>
-#include <stdlib.h>
 #include <omp.h>
+#include <stdlib.h>
+#include <stdio.h>
  
 int main()
 {
@@ -1295,7 +1368,7 @@ int main()
 
   Value if x after parallel section:  14
 ```
-private(x)显示地指定了变量x为私有变量，且没有初始值。firstprivate(x)显示地指定了变量x为私有变量，其初始值为主线程变量x的值。lastprivate(x)显示地指定了变量x为私有变量，且没有初始值，并将最后一次迭代的x值赋给主线程变量x。
+private(x)显示地指定了变量x为私有变量，且没有初始值。firstprivate(x)显示地指定了变量x为私有变量，其初始值为主线程变量x的值。lastprivate(x)显示地指定了变量x为私有变量，且没有初始值，并将最后一次迭代时x的值赋给主线程变量x。
 
 |子句|初始化行为|主线程变量更新|线程私有变量初始值|
 |---|---|---|---|
@@ -1318,8 +1391,8 @@ int main(void)
   omp_set_num_threads(N);
 
   int count[N];
-  memset(count, 0, sizeof(int) * N);
 
+  memset(count, 0, sizeof(int) * N);
   printf("**** Static Schedule **** \n \n" );
   
   #pragma omp parallel for schedule(static, 2)
@@ -1352,7 +1425,7 @@ int main(void)
   return 0;
 }
 ```
-schedule(static, 2)指定静态调度的任务分配策略，迭代空间（0~12）按块大小 2 划分，每个块连续分配给线程。总块数为 ceil(13/2)=7，线程按轮询顺序（0→1→2→3→0→1→2）接收块。。schedule(dynamic, 2)指定动态调度的任务分配策略，线程按需动态请求块，块分配顺序不确定，但每个块大小仍为 2（最后一个块可能为 1）。#pragma atomic指令确保了计数器count的访问安全。
+schedule(static, 2)指定了静态调度的任务分配策略，迭代空间（0~12）按块大小2划分，依次连续地分配给线程。总块数为 ceil(13/2)=7，线程按轮询顺序（0→1→2→3→0→1→2）分配块。schedule(dynamic, 2)指定了动态调度的任务分配策略，线程按需动态请求块，块分配顺序不确定，但每个块大小仍为2（最后一个块可能为1）。#pragma atomic指令确保了计数器count的访问安全。
 ```shell
 ./openmp_schedule 
   **** Static Schedule **** 
@@ -1370,7 +1443,7 @@ schedule(static, 2)指定静态调度的任务分配策略，迭代空间（0~12
 |调度类型|分配方式|适用场景|性能特点|
 |---|---|---|---|
 |static	|固定块轮询分配|负载均衡任务（如均匀循环）|低开销，可预测性高|
-|dynamic|动态按需分配|负载不均衡任务（如递归算法）|灵活性高，调度开销稍大|
+|dynamic|动态地按需分配|负载不均衡任务（如递归算法）|灵活性高，调度开销稍大|
 
 - [openmp_single.c](https://github.com/NCI900-Training-Organisation/intro-to-OpenMP/blob/main/src/openmp_single.c)
 ```c++
@@ -1424,7 +1497,7 @@ int main(void)
   return 0;
 }
 ```
-#pragma omp single指令让主线程分配a、b、c的内存，其它线程等待分配完成后继续执行（隐式同步），确保a、b、c内存的安全访问。#pragma omp for指令将循环迭代分配给不同的线程，每个线程执行一部分迭代，在循环结束时，所有线程会隐式同步，确保前一个循环的所有迭代完成后，才会开始下一个循环的执行。
+#pragma omp single指令让主线程负责分配a、b、c的内存，其它线程等待主线程分配完之后继续执行（隐式同步），以确保a、b、c内存的安全访问。#pragma omp for指令将循环迭代分配给不同的线程执行，每个线程执行一部分，在循环结束时，所有线程会隐式同步，确保前一个循环的所有迭代被执行完后，才会开始下一个循环迭代的执行。
 ```shell
 ./openmp_single 
   A[2] * B[2] = 6 * 6 = 36 
@@ -1489,8 +1562,184 @@ int main(void)
   return 0;
 }
 ```
+#pragma omp master指令让主线程负责分配a、b、c的内存，其它线程不等待主线程分配完就开始执行，这会引发段错误（Segmentation Fault）。
+```shell
+./openmp_master 
+  Segmentation fault (core dumped)
+```
 
+- [openmp_tasks.c](https://github.com/NCI900-Training-Organisation/intro-to-OpenMP/blob/main/src/openmp_tasks.c)
+```c++
+#include <omp.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
+int fib(int n)
+{
+	int r = 0, l = 0;
+
+	if (n < 2) return n;
+
+	#pragma omp task shared(l) firstprivate(n) 
+	l = fib(n-1);
+
+	#pragma omp task shared(r) firstprivate(n)
+	r = fib(n-2);
+
+	#pragma omp taskwait
+	return l+r;
+}
+
+int main(int argc, char* argv[])
+{
+	int n = 5;
+
+	if(argc > 1) n = atoi(argv[1]);
+
+	#pragma omp parallel shared(n)
+  {
+    #pragma omp single
+    printf ("fib(%d) = %d\n", n, fib(n));
+  }
+}
+```
+#pragma omp task指令用来创建一个显示任务，由线程池中的空闲线程动态调度执行。shared(list)指令用来指定一个或多个变量为共享变量，相关的线程都可以访问这些共享变量。#pragma omp taskwait指令配合#pragma omp task指令，用来等待其创建的显示任务完成后再继续执行。
+```mermaid
+graph TD
+  A0[主线程<br>fib（5）<br>return 1+0+1+1+1+0+1=5]
+  A0 --> B1[task<br>fib（4）<br>return 1+0+1+1=3]
+  A0 --> B2[task<br>fib（3）<br>return 1+0+1=2]
+  B1 --> C1[task<br>fib（3）<br>return 1+0+1=2]
+  B1 --> C2[task<br>fib（2）<br>return 1+0=1]
+  B2 --> C3[task<br>fib（2）<br>return 1+0=1]
+  B2 --> C4[task<br>fib（1）<br>-----------<br>return 1]
+  C1 --> D1[task<br>fib（2）<br>return 1+0=1]
+  C1 --> D2[task<br>fib（1）<br>-----------<br>return 1]
+  C2 --> D3[task<br>fib（1）<br>-----------<br>return 1]
+  C2 --> D4[task<br>fib（0）<br>-----------<br>return 0]
+  C3 --> D5[task<br>fib（1）<br>-----------<br>return 1]
+  C3 --> D6[task<br>fib（0）<br>-----------<br>return 0]
+  D1 --> E1[task<br>fib（1）<br>-----------<br>return 1]
+  D1 --> E2[task<br>fib（0）<br>-----------<br>return 0]
+```
+
+- [openmp_depend.c](https://github.com/NCI900-Training-Organisation/intro-to-OpenMP/blob/main/src/openmp_depend.c)
+```c++
+#include <omp.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+int write_val(int *var, int value)
+{
+	*var = value;
+}
+
+int read_val(int *var)
+{
+	return *var;
+}
+
+int main ( int argc, char *argv[] )
+{
+	int x = 10;
+	int y = 20;
+	int z = 0;
+
+  #pragma omp parallel
+  #pragma omp single
+  {
+
+		#pragma omp task shared(x) depend(out: x)
+		write_val(&x, 10);
+
+		#pragma omp task shared(y) depend(out: y)
+		write_val(&y, 10);
+
+		#pragma omp task shared(x, y) depend(in: x, y)
+		{
+			z = read_val(&x) + read_val(&y);
+			printf("Sum = %d \n", z);
+		}
+	}
+
+	return 0;
+}
+```
+depend(out: x)指令用来在任务执行完后标记变量x为已更新。depend(out: y)指令用来在任务执行完后标记变量y为已更新。depend(in: x, y)指令用来等待变量x，y被更新，当它们都被更新后才开始执行任务。显示任务是由线程池中的空闲任务调度执行的，这里说的线程池是指并行域创建的线程池，由#pragma omp parallel指令创建，线程池中线程的数量取决于接口omp_set_num_threads()、num_threads指令、环境变量OMP_NUM_THREADS、CPU核心数量一起决定（优先级递减）。该程序的运行结果如下所示：
+```shell
+./openmp_depend 
+  Sum = 20 
+```
+对上面的代码进行修改，修改后的代码如下所示：
+```c++
+#include <omp.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+int write_val(int *var, int value)
+{
+	printf("thread id = %d for write_val\n", omp_get_thread_num());
+	*var = value;
+	sleep(3);
+}
+
+int read_val(int *var)
+{
+	return *var;
+}
+
+int main ( int argc, char *argv[] )
+{
+	int x = 10;
+	int y = 20;
+	int z = 0;
+	printf("thread id = %d for main\n", omp_get_thread_num());
+	sleep(3);
+
+  #pragma omp parallel num_threads(2)
+  #pragma omp single
+  {
+
+		#pragma omp task shared(x) depend(out: x)
+		write_val(&x, 10);
+
+		#pragma omp task shared(y) depend(out: y)
+		write_val(&y, 10);
+
+		#pragma omp task shared(x, y) depend(in: x, y)
+		{
+			printf("thread id = %d for task\n", omp_get_thread_num());
+			z = read_val(&x) + read_val(&y);
+			printf("Sum = %d \n", z);
+			sleep(3);
+		}
+	}
+
+	printf("thread id = %d for main\n", omp_get_thread_num());
+	sleep(3);
+	return 0;
+}
+```
+该程序的运行结果如下所示：
+```shell
+./openmp_depend 
+  thread id = 0 for main
+  thread id = 1 for write_val
+  thread id = 0 for write_val
+  thread id = 1 for task
+  Sum = 20 
+  thread id = 0 for main
+while true; do ps -T -p `ps aux | grep openmp | grep -v grep | awk -F " " '{print $2}'`; sleep 1; done
+    PID    SPID TTY          TIME CMD
+  32892   32892 pts/2    00:00:00 openmp_depend
+    PID    SPID TTY          TIME CMD
+  32892   32892 pts/2    00:00:00 openmp_depend
+  32892   32929 pts/2    00:00:00 openmp_depend
+```
 
 #### 2.8.2 SIMD
 ##### 2.8.2.1 x86平台
